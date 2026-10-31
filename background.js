@@ -10,7 +10,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // serial() one after another, so there is no read-modify-write race.
 const state = {
   last: {},   // windowId -> last active tabId
-  popped: {}, // tabId -> { origin: windowId, index, win: windowId }
+  popped: {}, // tabId -> { origin, win, placeholder, title, favIconUrl, url, since }
 };
 const ready = chrome.storage.session.get(["last", "popped"]).then((r) => {
   state.last = r.last || {};
@@ -77,12 +77,48 @@ async function pickDisplay() {
 
 // --- Pop out / bring back --------------------------------------------------
 
+// While a video is popped out, a stand-in tab (placeholder.html) keeps its
+// place in the original window: switching to it brings the video back, and
+// closing it closes the video.
+const TAG = "[PopOut] ";
+const stripTag = (t) => (t && t.startsWith(TAG) ? t.slice(TAG.length) : t || "");
+// A placeholder activated this soon after the pop-out was activated by the
+// pop-out itself (the popped-out tab was the active one), not by you.
+const SETTLE_MS = 2000;
+
+function ownerOf(placeholderId) {
+  for (const [id, info] of Object.entries(state.popped)) {
+    if (info.placeholder === placeholderId) return Number(id);
+  }
+  return null;
+}
+
 async function popOut(tab) {
   const display = await pickDisplay();
   if (!display) return log("only one display: not popping out");
 
   const tabId = tab.id;
-  state.popped[tabId] = { origin: tab.windowId, index: tab.index, win: null };
+  tab = await chrome.tabs.get(tabId);
+  const info = {
+    origin: tab.windowId,
+    win: null,
+    placeholder: null,
+    title: stripTag(tab.title),
+    favIconUrl: tab.favIconUrl || "",
+    url: tab.url,
+    since: Date.now(),
+  };
+  const ph = await chrome.tabs.create({
+    windowId: tab.windowId,
+    index: tab.index + 1,
+    active: false,
+    url:
+      chrome.runtime.getURL("placeholder.html") +
+      "?" +
+      new URLSearchParams({ tab: tabId, title: info.title, icon: info.favIconUrl, url: tab.url }),
+  });
+  info.placeholder = ph.id;
+  state.popped[tabId] = info;
   await save();
 
   // Set the "[PopOut]" title before the window exists, so a KWin rule or
@@ -107,12 +143,17 @@ async function popOut(tab) {
     log("windows.create failed:", e.message);
     delete state.popped[tabId];
     await save();
+    await chrome.tabs.remove(ph.id).catch(() => {});
     await send(tabId, { type: "popped", value: false });
     return;
   }
-  state.popped[tabId].win = win.id;
+  info.win = win.id;
+  // Popped out from the toolbar or the shortcut: the tab was the active one,
+  // so show its stand-in now rather than whatever neighbour Chromium picks.
+  if (tab.active) await chrome.tabs.update(ph.id, { active: true }).catch(() => {});
+  info.since = Date.now();
   await save();
-  log("popped out tab", tabId, "into window", win.id, "on", display.name || display.id);
+  log("popped out tab", tabId, "into window", win.id, "on", display.name || display.id, "placeholder", ph.id);
 
   await sleep(250); // let the window manager place it before fullscreening
   await chrome.windows.update(win.id, { state: "fullscreen" }).catch((e) => log("fullscreen failed:", e.message));
@@ -122,23 +163,25 @@ async function popOut(tab) {
   await chrome.windows.update(tab.windowId, { focused: true }).catch((e) => log("refocus failed:", e.message));
 }
 
-// The window to send a tab back to: where it came from, or else another
-// normal window of the same kind (regular / incognito).
-async function returnWindow(info, incognito) {
-  try {
-    await chrome.windows.get(info.origin);
-    return { id: info.origin, index: info.index };
-  } catch {}
+// Where to send a tab back to: the place of its stand-in, or else the focused
+// (or any) other normal window of the same kind (regular / incognito).
+async function returnPlace(info, incognito) {
+  if (info.placeholder != null) {
+    try {
+      const ph = await chrome.tabs.get(info.placeholder);
+      return { windowId: ph.windowId, index: ph.index };
+    } catch {}
+  }
   const wins = await chrome.windows.getAll({ windowTypes: ["normal"] });
   const others = wins.filter((w) => w.id !== info.win && w.incognito === incognito);
   const w = others.find((w) => w.focused) || others[0];
-  return w ? { id: w.id, index: -1 } : null;
+  return w ? { windowId: w.id, index: -1 } : null;
 }
 
 async function bringBack(tabId) {
   const info = state.popped[tabId];
   if (!info) return;
-  delete state.popped[tabId];
+  delete state.popped[tabId]; // first, so that removing the stand-in below does not close the video
   await save();
   await send(tabId, { type: "popped", value: false });
 
@@ -146,27 +189,29 @@ async function bringBack(tabId) {
   try {
     tab = await chrome.tabs.get(tabId);
   } catch {
+    if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
     return;
   }
-  const target = await returnWindow(info, tab.incognito);
-  if (!target) {
+  const place = await returnPlace(info, tab.incognito);
+  if (!place) {
     // No window to go back to: leave it here as a normal window.
     log("no window to return to; leaving tab", tabId, "where it is");
     await chrome.windows.update(tab.windowId, { state: "normal" }).catch(() => {});
     return;
   }
-  const count = (await chrome.tabs.query({ windowId: target.id })).length;
-  const index = target.index < 0 ? -1 : Math.min(target.index, count);
-  await chrome.tabs.move(tabId, { windowId: target.id, index });
+  await chrome.tabs.move(tabId, place);
   await chrome.tabs.update(tabId, { active: true });
-  await chrome.windows.update(target.id, { focused: true });
-  log("brought tab", tabId, "back to window", target.id);
+  if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
+  await chrome.windows.update(place.windowId, { focused: true });
+  log("brought tab", tabId, "back to window", place.windowId);
 }
 
 // Toolbar button and keyboard shortcut: bring back the popped-out video if
 // there is one, otherwise pop out the current tab.
 async function toggle(tab) {
   if (tab && state.popped[tab.id]) return bringBack(tab.id);
+  const owner = tab && ownerOf(tab.id);
+  if (owner != null) return bringBack(owner);
   const poppedId = Object.keys(state.popped)[0];
   if (poppedId) return bringBack(Number(poppedId));
   if (tab) return popOut(tab);
@@ -180,6 +225,13 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
     state.last[windowId] = tabId;
     await save();
 
+    // Switched to the stand-in of a popped-out video: bring the video back.
+    const owner = ownerOf(tabId);
+    if (owner != null && Date.now() - state.popped[owner].since > SETTLE_MS) {
+      log("placeholder", tabId, "activated");
+      return bringBack(owner);
+    }
+
     if (prevId == null || prevId === tabId) return;
     if (state.popped[prevId]) return log("tab", prevId, "is already popped out");
 
@@ -191,6 +243,8 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
     }
     // Dragged into another window, or moved by popOut itself.
     if (prev.windowId !== windowId) return log("tab", prevId, "left window", windowId);
+    // Already switched back to it.
+    if (prev.active) return;
 
     const status = await videoStatus(prev);
     log("switched away from tab", prevId, status);
@@ -200,9 +254,11 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = sender.tab && sender.tab.id;
-  if (tabId == null) return;
-  if (msg.type === "bringBack") serial(() => bringBack(tabId));
-  else if (msg.type === "hello") {
+  if (msg.type === "bringBack") {
+    // From the video's content script (Escape), or from its stand-in.
+    const id = msg.tabId != null ? msg.tabId : tabId;
+    if (id != null) serial(() => bringBack(id));
+  } else if (msg.type === "hello" && tabId != null) {
     // A content script just loaded: tell it whether its tab is popped out.
     serial(() => sendResponse({ popped: !!state.popped[tabId] }));
     return true;
@@ -214,11 +270,40 @@ chrome.commands.onCommand.addListener((cmd, tab) => {
   if (cmd === "toggle-popout") serial(() => toggle(tab));
 });
 
-chrome.tabs.onRemoved.addListener((tabId) =>
+// Keep the stand-in's title and icon in sync (e.g. autoplay of the next video).
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (!(change.title || change.favIconUrl)) return;
   serial(async () => {
-    if (state.popped[tabId]) {
+    const info = state.popped[tabId];
+    if (!info) return;
+    if (change.title) info.title = stripTag(change.title);
+    if (change.favIconUrl) info.favIconUrl = change.favIconUrl;
+    await save();
+  });
+});
+
+chrome.tabs.onRemoved.addListener((tabId, { isWindowClosing }) =>
+  serial(async () => {
+    const info = state.popped[tabId];
+    if (info) {
+      // The video was closed (e.g. its window): its stand-in goes too.
       delete state.popped[tabId];
       await save();
+      if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
+      return;
+    }
+    const owner = ownerOf(tabId);
+    if (owner == null) return;
+    if (isWindowClosing) {
+      // Its window was closed: keep the video; it comes back elsewhere.
+      state.popped[owner].placeholder = null;
+      await save();
+    } else {
+      // The stand-in tab was closed: close the video too.
+      log("placeholder", tabId, "closed: closing tab", owner);
+      delete state.popped[owner];
+      await save();
+      await chrome.tabs.remove(owner).catch(() => {});
     }
   })
 );

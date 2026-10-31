@@ -7,8 +7,9 @@ const SRC = path.resolve(__dirname, '..');
 // The extension is loaded from a copy. OLD_EXT=<dir> loads that version
 // first, then upgrades it to this one in place, like reloading after a pull.
 const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'popout-ext-'));
-const FILES = ['manifest.json', 'background.js', 'content.js', 'content.css'];
-const install = (from) => FILES.forEach((f) => fs.copyFileSync(path.join(from, f), path.join(EXT, f)));
+const install = (from) => fs.readdirSync(from)
+  .filter((f) => /\.(json|js|css|html|png|svg)$/.test(f))
+  .forEach((f) => fs.copyFileSync(path.join(from, f), path.join(EXT, f)));
 install(process.env.OLD_EXT || SRC);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
@@ -32,6 +33,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
     const d = (id, w, h, left, isPrimary) => ({ id, name: id, isPrimary, bounds: { left, top: 0, width: w, height: h }, workArea: { left, top: 0, width: w, height: h } });
     chrome.system.display.getInfo = async () => [d('big', 1920, 1080, 0, true), d('small', 1280, 720, 1920, false)];
   });
+  const placeholders = async () => (await ev(() => chrome.tabs.query({}))).filter((t) => t.url.includes('placeholder.html'));
   const activate = (id) => ev((id) => chrome.tabs.update(id, { active: true }), id);
 
   // Open the tabs BEFORE the extension is loaded: they have no content
@@ -82,6 +84,11 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('player fills viewport', await p0.evaluate(() => { const r = document.querySelector('#movie_player').getBoundingClientRect(); return r.width === innerWidth && r.height === innerHeight; }));
   check('origin window focused again', (await windows()).find((w) => w.id === B.windowId).focused);
 
+  let phs = await placeholders();
+  check('stand-in tab keeps its place', phs.length === 1 && phs[0].windowId === B.windowId && phs[0].index === 0 && !phs[0].active,
+    JSON.stringify(phs.map((t) => [t.windowId, t.index, t.active])));
+  check('stand-in tab has the video title', phs[0] && phs[0].title === 'Video a - YouTube', phs[0] && phs[0].title);
+
   // Hover preview on the home page (B) must not pop out; nor must a paused video (C).
   await activate(C.id); await sleep(800);
   await activate(B.id); await sleep(800);
@@ -94,6 +101,18 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('Escape brings it back', ws.length === 1 && back.windowId === B.windowId && back.index === 0, `windows=${ws.length} index=${back.index}`);
   check('title restored', !(await p0.title()).startsWith('[PopOut]'));
   check('class removed', !(await p0.evaluate(() => document.documentElement.classList.contains('pf-popped'))));
+  check('stand-in removed', (await placeholders()).length === 0);
+
+  // Switching to the stand-in tab brings the video back in its place.
+  await activate(A.id); await sleep(300);
+  await activate(B.id); await sleep(2500);
+  phs = await placeholders();
+  await activate(phs[0].id); await sleep(1000);
+  ws = await windows();
+  const back2 = await ev((id) => chrome.tabs.get(id), A.id);
+  check('switching to the stand-in brings it back', ws.length === 1 && back2.windowId === B.windowId && back2.index === 0 && back2.active && (await placeholders()).length === 0,
+    `windows=${ws.length} index=${back2.index} active=${back2.active}`);
+  check('video still playing after coming back', await p0.evaluate(() => !document.querySelector('video').paused));
 
   // Rapid switching: A (playing) -> B -> C -> B quickly; A must pop out exactly once.
   await activate(A.id); await sleep(300);
@@ -104,7 +123,16 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await ev((id) => chrome.tabs.sendMessage(id, { type: 'x' }).catch(() => 0), A.id);
   // Bring back via the keyboard command path (toggle with no popped tab passed).
   await p0.bringToFront(); await p0.keyboard.press('Escape'); await sleep(1000);
-  check('back again', (await windows()).length === 1);
+  check('back again', (await windows()).length === 1 && (await placeholders()).length === 0);
+
+  // Toolbar / shortcut on the active video: its stand-in becomes the active
+  // tab and must not bring it straight back.
+  await activate(A.id); await sleep(300);
+  await ev(async (id) => toggle(await chrome.tabs.get(id)), A.id); await sleep(3000);
+  phs = await placeholders();
+  check('toolbar pop-out stays out, stand-in active', (await windows()).length === 2 && phs.length === 1 && phs[0].active);
+  await ev(async (id) => toggle(await chrome.tabs.get(id)), phs[0].id); await sleep(1000);
+  check('toolbar on the stand-in brings it back', (await windows()).length === 1 && (await ev((id) => chrome.tabs.get(id), A.id)).active && (await placeholders()).length === 0);
 
   // Dragging a playing tab into its own window must not trigger a pop-out.
   await activate(A.id); await sleep(300);
@@ -117,6 +145,25 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await activate(A.id); await sleep(300);
   await ev((id) => chrome.tabs.remove(id), A.id); await sleep(1200);
   check('closing a playing tab does not pop out', (await windows()).length === 1);
+
+  // Closing the stand-in tab closes the video.
+  const playing = async (v) => {
+    const pg = await ctx.newPage(); await pg.goto('https://www.youtube.com/watch?v=' + v); await sleep(500);
+    const t = await tabByUrl('v=' + v);
+    await activate(B.id); await sleep(2500);
+    return t;
+  };
+  const D = await playing('d');
+  phs = await placeholders();
+  check('popped out again', (await windows()).length === 2 && phs.length === 1);
+  await ev((id) => chrome.tabs.remove(id), phs[0].id); await sleep(1000);
+  check('closing the stand-in closes the video', (await windows()).length === 1 && !(await tabByUrl('v=d')));
+
+  // Closing the pop-out window removes the stand-in.
+  const E = await playing('e');
+  const winE = (await ev((id) => chrome.tabs.get(id), E.id)).windowId;
+  await ev((id) => chrome.windows.remove(id), winE); await sleep(1000);
+  check('closing the pop-out window removes the stand-in', (await windows()).length === 1 && (await placeholders()).length === 0);
 
   console.log('--- service worker log ---\n' + logs.join('\n'));
   await ctx.close();
