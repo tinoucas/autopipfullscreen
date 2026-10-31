@@ -5,12 +5,15 @@
 //   - moves it to the target screen: the one named in the "Output" setting,
 //     else the smallest screen;
 //   - maximizes it (the extension then makes it fullscreen);
-//   - puts it on all desktops;
+//   - puts it on all desktops, and keeps it above other windows;
 //   - gives the focus back to the window you were working in.
 //
 // Settings (optional), e.g. to pick a screen by its name (see the
 // "kscreen-doctor -o" output):
 //   kwriteconfig6 --file kwinrc --group Script-youtube-popout --key Output HDMI-A-1
+// or not to keep it above other windows:
+//   kwriteconfig6 --file kwinrc --group Script-youtube-popout --key KeepAbove false
+// then: qdbus6 org.kde.KWin /KWin reconfigure
 // Debug output: journalctl --user -f | grep youtube-popout
 
 const TAG = "[PopOut]";
@@ -49,6 +52,7 @@ function place(w, previous) {
   const out = targetOutput(w);
   if (out && (!w.output || w.output.name !== out.name)) workspace.sendClientToScreen(w, out);
   w.onAllDesktops = true;
+  w.keepAbove = String(readConfig("KeepAbove", true)) !== "false";
   w.setMaximize(true, true);
   log("placed", w.caption, "on", out ? out.name : "(only one screen)");
   refocus(w);

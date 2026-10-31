@@ -2,9 +2,9 @@
   "KPlugin": {
     "Id": "youtube-popout",
     "Name": "YouTube Pop-Out placement",
-    "Description": "Moves the YouTube Pop-Out window (title contains [PopOut]) to the other screen, maximized, on all desktops, and keeps the focus where it was.",
+    "Description": "Moves the YouTube Pop-Out window (title contains [PopOut]) to the other screen, maximized, on all desktops, above other windows, and keeps the focus where it was.",
     "License": "MIT",
-    "Version": "1.0",
+    "Version": "1.1",
     "EnabledByDefault": false
   },
   "X-Plasma-API": "javascript",

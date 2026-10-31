@@ -71,6 +71,22 @@ async function step(name, promise) {
   }
 }
 
+// A click on a tab activates it while the mouse button is still down, and
+// until it is released (the click might become a tab drag) Chromium refuses
+// to change tabs: "Tabs cannot be edited right now (user may be dragging a
+// tab)". Retry until it accepts, for up to 10 s.
+async function whenEditable(name, fn) {
+  for (let i = 0; ; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!/cannot be edited right now/.test(e.message) || i >= 100) throw e;
+      if (i === 0) log(name + ": tabs can't be edited right now (mouse button down on a tab?); waiting");
+      await sleep(100);
+    }
+  }
+}
+
 // After a reload or a restart, the tab active in each window has not been
 // "activated" yet: record it, so that switching away from it counts.
 async function seedLastActive() {
@@ -148,7 +164,7 @@ function initialBounds(display) {
   const wa = display.workArea;
   const margin = 24;
   const width = Math.min(wa.width - 2 * margin, Math.max(480, Math.round(wa.width * 0.3)));
-  const height = Math.min(wa.height - 2 * margin, Math.round((width * 9) / 16) + 90); // 16:9 video + tab strip and toolbar
+  const height = Math.min(wa.height - 2 * margin, Math.round((width * 9) / 16) + 40); // 16:9 video + the popup's address bar
   return {
     left: wa.left + wa.width - width - margin,
     top: wa.top + wa.height - height - margin,
@@ -175,7 +191,8 @@ function ownerOf(placeholderId) {
   return null;
 }
 
-async function popOut(tab) {
+// auto: because you switched away from it (not the toolbar or shortcut).
+async function popOut(tab, auto = false) {
   const displays = await getDisplays();
   if (displays.length < 2) return log("only one display: not popping out");
 
@@ -191,15 +208,29 @@ async function popOut(tab) {
     url: tab.url,
     since: Date.now(),
   };
-  const ph = await chrome.tabs.create({
-    windowId: tab.windowId,
-    index: tab.index + 1,
-    active: false,
-    url:
-      chrome.runtime.getURL("placeholder.html") +
-      "?" +
-      new URLSearchParams({ tab: tabId, title: info.title, icon: info.favIconUrl, url: tab.url }),
-  });
+  const ph = await whenEditable("create stand-in", () =>
+    chrome.tabs.create({
+      windowId: tab.windowId,
+      index: tab.index + 1,
+      active: false,
+      url:
+        chrome.runtime.getURL("placeholder.html") +
+        "?" +
+        new URLSearchParams({ tab: tabId, title: info.title, icon: info.favIconUrl, url: tab.url }),
+    })
+  );
+  if (auto) {
+    // While we waited, you may have come back to the tab, or dragged it away.
+    const now = await chrome.tabs.get(tabId).catch(() => null);
+    if (!now || now.active || now.windowId !== tab.windowId) {
+      log("tab", tabId, "is active again or moved: not popping out");
+      await whenEditable("remove stand-in", () => chrome.tabs.remove(ph.id)).catch(() => {});
+      return;
+    }
+    if (now.index !== tab.index) {
+      await whenEditable("move stand-in", () => chrome.tabs.move(ph.id, { index: now.index + 1 })).catch(() => {});
+    }
+  }
   info.placeholder = ph.id;
   state.popped[tabId] = info;
   await save();
@@ -212,28 +243,33 @@ async function popOut(tab) {
   const b = initialBounds(display);
   let win;
   try {
-    win = await chrome.windows.create({
-      tabId,
-      type: "normal", // must be "normal" so the tab can be moved back later
-      incognito: tab.incognito,
-      left: b.left,
-      top: b.top,
-      width: b.width,
-      height: b.height,
-      focused: false,
-    });
+    win = await whenEditable("create window", () =>
+      chrome.windows.create({
+        tabId,
+        // A popup: no tab strip or toolbar (only a thin read-only address
+        // bar, which fullscreen hides too), and other extensions leave it
+        // alone (Static New Tab pins its tab in normal windows only).
+        type: "popup",
+        incognito: tab.incognito,
+        left: b.left,
+        top: b.top,
+        width: b.width,
+        height: b.height,
+        focused: false,
+      })
+    );
   } catch (e) {
     log("windows.create failed:", e.message);
     delete state.popped[tabId];
     await save();
-    await chrome.tabs.remove(ph.id).catch(() => {});
+    await whenEditable("remove stand-in", () => chrome.tabs.remove(ph.id)).catch(() => {});
     await send(tabId, { type: "popped", value: false });
     return;
   }
   info.win = win.id;
   // Popped out from the toolbar or the shortcut: the tab was the active one,
   // so show its stand-in now rather than whatever neighbour Chromium picks.
-  if (tab.active) await chrome.tabs.update(ph.id, { active: true }).catch(() => {});
+  if (tab.active) await whenEditable("show stand-in", () => chrome.tabs.update(ph.id, { active: true })).catch(() => {});
   info.since = Date.now();
   await save();
   log("popped out tab", tabId, "into window", win.id, "placeholder", ph.id, "asked for", `${b.width}x${b.height}+${b.left}+${b.top}`, "on", display.name || display.id);
@@ -335,7 +371,7 @@ async function bringBack(tabId) {
   } catch {
     delete state.popped[tabId];
     await save();
-    if (info.placeholder != null) await step("remove placeholder", chrome.tabs.remove(info.placeholder));
+    if (info.placeholder != null) await step("remove placeholder", whenEditable("remove placeholder", () => chrome.tabs.remove(info.placeholder)));
     return "The video's tab is gone.";
   }
   const place = await returnPlace(info, tab.incognito);
@@ -354,16 +390,11 @@ async function bringBack(tabId) {
     await step("leave fullscreen", chrome.windows.update(tab.windowId, { state: "normal" }));
   }
   let error = null;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await chrome.tabs.move(tabId, place);
-      error = null;
-      break;
-    } catch (e) {
-      error = e.message;
-      log("move back, attempt", attempt, "failed:", error);
-      await sleep(300);
-    }
+  try {
+    await whenEditable("move back", () => chrome.tabs.move(tabId, place));
+  } catch (e) {
+    error = e.message;
+    log("move back failed:", error);
   }
   if (error) {
     // Still popped out: say why on the stand-in, and allow another try.
@@ -377,8 +408,8 @@ async function bringBack(tabId) {
   delete state.popped[tabId];
   await save();
   await send(tabId, { type: "popped", value: false });
-  await step("activate", chrome.tabs.update(tabId, { active: true }));
-  if (info.placeholder != null) await step("remove placeholder", chrome.tabs.remove(info.placeholder));
+  await step("activate", whenEditable("activate", () => chrome.tabs.update(tabId, { active: true })));
+  if (info.placeholder != null) await step("remove placeholder", whenEditable("remove placeholder", () => chrome.tabs.remove(info.placeholder)));
   if (tab.windowId !== place.windowId) await closeLeftover(tab.windowId);
   await step("focus", chrome.windows.update(place.windowId, { focused: true }));
   log("brought tab", tabId, "back to window", place.windowId);
@@ -432,7 +463,7 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
 
     const status = await videoStatus(prev);
     log("switched away from tab", prevId, status);
-    if (status && status.playing) await popOut(prev);
+    if (status && status.playing) await popOut(prev, true);
   })
 );
 
@@ -478,7 +509,7 @@ chrome.tabs.onRemoved.addListener((tabId, { isWindowClosing }) =>
       // The video was closed (e.g. its window): its stand-in goes too.
       delete state.popped[tabId];
       await save();
-      if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
+      if (info.placeholder != null) await step("remove placeholder", whenEditable("remove placeholder", () => chrome.tabs.remove(info.placeholder)));
       if (!isWindowClosing) await closeLeftover(info.win);
       return;
     }
@@ -494,7 +525,7 @@ chrome.tabs.onRemoved.addListener((tabId, { isWindowClosing }) =>
       const win = state.popped[owner].win;
       delete state.popped[owner];
       await save();
-      await step("close video", chrome.tabs.remove(owner));
+      await step("close video", whenEditable("close video", () => chrome.tabs.remove(owner)));
       await closeLeftover(win);
     }
   })

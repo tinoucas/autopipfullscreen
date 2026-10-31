@@ -2,9 +2,9 @@
 
 A Chromium (MV3) extension, made for Helium on KDE Plasma: when you switch
 away from a YouTube tab whose video is playing, the tab moves into its own
-window. With the KWin script below, that window goes to your other screen,
-maximized and then fullscreen, on all desktops, and the focus stays where you
-were working.
+window, without tab strip or toolbar. With the KWin script below, that window
+goes to your other screen, maximized and then fullscreen, on all desktops,
+above other windows, and the focus stays where you were working.
 
 This is an alternative to Chromium's picture-in-picture window, which has a
 maximum size that can't be changed.
@@ -30,7 +30,10 @@ maximum size that can't be changed.
 - Toolbar button or Alt+Shift+Y on a tab that isn't popped out pops it out.
 - Nothing happens with a single screen.
 
-The window first appears small, at the bottom right of the current screen.
+The window is a popup window: no tab strip or toolbar, only a thin read-only
+address bar that Chromium always shows on web pages in popups (fullscreen
+hides it too). It first appears small, at the bottom right of the current
+screen. Keeping it above other windows is up to KWin: extensions can't.
 On Wayland, Chromium can't place its own windows, so the position is up to
 KWin: without the script or a rule, it may appear elsewhere.
 
@@ -44,8 +47,8 @@ makes it fullscreen itself, once KWin has maximized it on the right screen.
 ### Script (recommended)
 
 It moves the window to the smallest screen (or the one you name), maximizes
-it, puts it on all desktops, and gives the focus back to the window you were
-in. It also reacts if the mark appears in the title later.
+it, puts it on all desktops, keeps it above other windows, and gives the
+focus back to the window you were in. It also reacts if the mark appears in the title later.
 
 ```bash
 kpackagetool6 --type=KWin/Script --install kwin
@@ -71,6 +74,14 @@ To use a given screen rather than the smallest one, use its name from
 kwriteconfig6 --file kwinrc --group Script-youtube-popout --key Output HDMI-A-1
 ```
 
+To not keep it above other windows:
+
+```bash
+kwriteconfig6 --file kwinrc --group Script-youtube-popout --key KeepAbove false
+```
+
+After changing a setting, run `qdbus6 org.kde.KWin /KWin reconfigure`.
+
 The script logs to the journal:
 
 ```bash
@@ -87,6 +98,7 @@ journalctl --user -f | grep youtube-popout
   - Maximized horizontally: **Apply Initially**, Yes
   - Maximized vertically: **Apply Initially**, Yes
   - Virtual Desktop: **Force**, All Desktops
+  - Keep above other windows: **Force**, Yes
   - Focus stealing prevention: **Force**, Extreme (keeps the focus on your
     window)
 

@@ -40,7 +40,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
     chrome.system.display.getInfo = async () => [d('big', 1920, 1080, 0, true), d('small', 1280, 720, 1920, false)];
   });
   const placeholders = async () => (await ev(() => chrome.tabs.query({}))).filter((t) => t.url.includes('placeholder.html'));
-  const activate = (id) => ev((id) => chrome.tabs.update(id, { active: true }), id);
+  const activate = (id) => ev((id) => ((globalThis.unlocked && globalThis.unlocked.tu) || chrome.tabs.update)(id, { active: true }), id); // a switch by hand is never refused
 
   // Open the tabs BEFORE the extension is loaded: they have no content
   // script, as after reloading the extension from chrome://extensions.
@@ -73,24 +73,31 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   const home = (await ev((id) => chrome.tabs.get(id), A.id)).index; // after any pinned tab
   // As after a restart: nothing recorded yet, only what is active now.
   await ev(() => { state.last = {}; return seedLastActive(); });
+  // As when switching with a click: Chromium refuses tab changes until the
+  // mouse button is released ("user may be dragging a tab").
+  const lockTabs = (ms) => ev((ms) => {
+    const until = Date.now() + ms;
+    globalThis.unlocked ||= { tc: chrome.tabs.create, tm: chrome.tabs.move, tu: chrome.tabs.update, tr: chrome.tabs.remove, wc: chrome.windows.create };
+    const u = globalThis.unlocked;
+    const lock = (f) => (...a) => (Date.now() < until ? Promise.reject(new Error('Tabs cannot be edited right now (user may be dragging a tab).')) : f(...a));
+    chrome.tabs.create = lock(u.tc); chrome.tabs.move = lock(u.tm); chrome.tabs.update = lock(u.tu); chrome.tabs.remove = lock(u.tr); chrome.windows.create = lock(u.wc);
+  }, ms);
+  await lockTabs(800);
   // Switch away from the playing video A.
-  await activate(B.id); await sleep(1500);
+  await activate(B.id); await sleep(2300);
   let ws = await windows();
   const popWin = ws.find((w) => w.tabs.some((t) => t.id === A.id));
-  check('pop-out on the first switch after a fresh start, and after reload (re-injection)', ws.length === 2 && popWin.id !== B.windowId, `windows=${ws.length}`);
+  check('pop-out on the first switch after a fresh start, after reload (re-injection), with tab edits refused for a moment', ws.length === 2 && popWin.id !== B.windowId, `windows=${ws.length}`);
   const r = popWin && [popWin.left, popWin.top, popWin.width, popWin.height];
   check('pop-out window starts small, bottom right of the current screen',
-    popWin && popWin.state === 'normal' && Math.abs(r[0] + r[2] - (1920 - 24)) < 30 && Math.abs(r[1] + r[3] - (1080 - 24)) < 30 && r[2] < 1000,
-    popWin && `${popWin.state} ${JSON.stringify(r)}`);
+    popWin && popWin.type === 'popup' && popWin.state === 'normal' && Math.abs(r[0] + r[2] - (1920 - 24)) < 30 && Math.abs(r[1] + r[3] - (1080 - 24)) < 30 && r[2] < 1000,
+    popWin && `${popWin.type} ${popWin.state} ${JSON.stringify(r)}`);
+  check('no other tab in the pop-out window (other extensions leave popups alone)', popWin && popWin.tabs.length === 1, popWin && popWin.tabs.map((t) => t.url).join(' '));
   // Play KWin's part: maximize the window (on the other screen); the
   // extension turns that into fullscreen.
   await ev((id) => chrome.windows.update(id, { state: 'maximized' }), popWin.id); await sleep(1500);
   const fs1 = (await ev((id) => chrome.windows.get(id), popWin.id)).state;
   check('maximized pop-out window goes fullscreen', fs1 === 'fullscreen', fs1);
-  // Another extension adding a tab drops fullscreen: it is put back.
-  await ev((id) => chrome.tabs.create({ windowId: id, url: 'about:blank', active: false, pinned: true }), popWin.id); await sleep(1500);
-  const fs2 = (await ev((id) => chrome.windows.get(id), popWin.id)).state;
-  check('fullscreen again after a tab was added', fs2 === 'fullscreen', fs2);
   const titleChanges = await Promise.race([
     p0.evaluate(() => new Promise((r) => {
       let n = 0;
@@ -135,10 +142,10 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await activate(A.id); await sleep(300);
   await activate(B.id); await sleep(2500);
   phs = await placeholders();
-  await activate(phs[0].id); await sleep(1000);
+  await activate(phs[0].id); await lockTabs(800); await sleep(1800);
   ws = await windows();
   const back2 = await ev((id) => chrome.tabs.get(id), A.id);
-  check('switching to the stand-in brings it back', ws.length === 1 && back2.windowId === B.windowId && back2.index === home && back2.active && (await placeholders()).length === 0,
+  check('switching to the stand-in brings it back (tab edits refused for a moment)', ws.length === 1 && back2.windowId === B.windowId && back2.index === home && back2.active && (await placeholders()).length === 0,
     `windows=${ws.length} index=${back2.index} active=${back2.active}`);
   check('video still playing after coming back', await p0.evaluate(() => !document.querySelector('video').paused));
 
@@ -153,14 +160,14 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   // tabs.move failing every time: the button says why, and nothing is lost.
   await activate(A.id); await sleep(300);
   await activate(B.id); await sleep(2500);
-  await ev(() => { chrome.tabs.move = () => Promise.reject(new Error('Tabs cannot be edited right now')); });
+  await ev(() => { chrome.tabs.move = () => Promise.reject(new Error('Tabs can only be moved to and from normal windows.')); });
   const phPage = ctx.pages().find((q) => q.url().includes('placeholder.html'));
   await phPage.bringToFront(); await sleep(1500);
   const status = await phPage.locator('#status').textContent();
-  check('failed bring-back shown on the stand-in', status.includes('Tabs cannot be edited'), JSON.stringify(status));
+  check('failed bring-back shown on the stand-in', status.includes('normal windows'), JSON.stringify(status));
   await phPage.locator('#back').click(); await sleep(2000);
   check('still popped out after a failed bring-back', (await windows()).length === 2 && (await placeholders()).length === 1);
-  await ev(() => { chrome.tabs.move = globalThis.realMove; });
+  await ev(() => { chrome.tabs.move = globalThis.unlocked.tm; });
   await phPage.locator('#back').click(); await sleep(1500);
   check('"Bring it back here" works', (await windows()).length === 1 && (await placeholders()).length === 0);
 
