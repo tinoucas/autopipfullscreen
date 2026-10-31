@@ -92,6 +92,8 @@ extension → "service worker".)
   over the window, Escape
 - `placeholder.html` / `placeholder.js`: the stand-in tab
 - `log.html` / `log.js`: the log page
+- `icon.svg`: the icon; `icons/*.png` are rendered from it by
+  `node tools/render-icons.js`
 - `test/`: an end-to-end test against fake YouTube, Twitch and Vimeo pages (`test/run.sh`; it
   needs Xvfb, openssl, Node with Playwright, and optionally openbox).
   `OTHER_EXT=<dir>` loads other extensions alongside, e.g. Static New Tab;

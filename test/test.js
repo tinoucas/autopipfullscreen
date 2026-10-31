@@ -8,8 +8,8 @@ const SRC = path.resolve(__dirname, '..');
 // first, then upgrades it to this one in place, like reloading after a pull.
 const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'popout-ext-'));
 const install = (from) => fs.readdirSync(from)
-  .filter((f) => /\.(json|js|css|html|png|svg)$/.test(f))
-  .forEach((f) => fs.copyFileSync(path.join(from, f), path.join(EXT, f)));
+  .filter((f) => /\.(json|js|css|html|png|svg)$/.test(f) || f === 'icons')
+  .forEach((f) => fs.cpSync(path.join(from, f), path.join(EXT, f), { recursive: true }));
 install(process.env.OLD_EXT || SRC);
 // OTHER_EXT=<dir>[,<dir>...]: also load these extensions (e.g. Static New Tab,
 // which pins a New Tab page in every window, the pop-out one included).
