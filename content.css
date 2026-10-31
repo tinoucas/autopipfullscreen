@@ -1,17 +1,19 @@
-/* Stretch the YouTube player over the whole (fullscreen) window. */
+/* Popped out: the video covers the whole window. */
 html.pf-popped,
 html.pf-popped body {
   overflow: hidden !important;
   background: #000 !important;
 }
 
-html.pf-popped #masthead-container,
-html.pf-popped #secondary,
-html.pf-popped #below {
+/* --- YouTube: its player and its controls. ------------------------------- */
+
+html.pf-youtube #masthead-container,
+html.pf-youtube #secondary,
+html.pf-youtube #below {
   display: none !important;
 }
 
-html.pf-popped #movie_player {
+html.pf-youtube #movie_player {
   position: fixed !important;
   top: 0 !important;
   left: 0 !important;
@@ -21,7 +23,7 @@ html.pf-popped #movie_player {
   background: #000 !important;
 }
 
-html.pf-popped #movie_player video.html5-main-video {
+html.pf-youtube #movie_player video.html5-main-video {
   top: 0 !important;
   left: 0 !important;
   width: 100vw !important;
@@ -29,7 +31,61 @@ html.pf-popped #movie_player video.html5-main-video {
   object-fit: contain !important;
 }
 
-html.pf-popped #movie_player .ytp-chrome-bottom {
+html.pf-youtube #movie_player .ytp-chrome-bottom {
   left: 12px !important;
   width: calc(100% - 24px) !important;
+}
+
+/* --- Other sites: content.js marks the player box (the element around the
+   video holding the site's controls, or the frame holding the player). It
+   covers the window; the rest of the page is hidden. ---------------------- */
+
+html.pf-generic body {
+  visibility: hidden !important;
+}
+
+/* Would make the player's position: fixed relative to them, not the window. */
+html.pf-generic [data-pf-ancestor] {
+  transform: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  perspective: none !important;
+  contain: none !important;
+  will-change: auto !important;
+}
+
+html.pf-generic [data-pf-player] {
+  visibility: visible !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none !important;
+  max-height: none !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  transform: none !important;
+  z-index: 2147483647 !important;
+  background: #000 !important;
+}
+
+/* Between the player box and the video, and the video: fill the box. */
+html.pf-generic [data-pf-between],
+html.pf-generic [data-pf-video] {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  transform: none !important;
+}
+
+html.pf-generic video[data-pf-video],
+html.pf-generic video[data-pf-player] {
+  object-fit: contain !important;
 }

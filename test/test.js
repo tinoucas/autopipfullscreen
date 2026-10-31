@@ -15,7 +15,17 @@ install(process.env.OLD_EXT || SRC);
 // which pins a New Tab page in every window, the pop-out one included).
 const OTHERS = process.env.OTHER_EXT ? process.env.OTHER_EXT.split(',') : [];
 const ALL = [EXT, ...OTHERS].join(',');
-const NAME = JSON.parse(fs.readFileSync(path.join(SRC, 'manifest.json'))).name;
+// Older versions were called "YouTube Pop-Out to Second Screen".
+const NAME = 'Pop-Out to Second Screen';
+// The sites tested besides YouTube: their access is granted up front, as
+// the test can't answer Helium's permission prompt.
+const TEST_SITES = ['*://*.twitch.tv/*', '*://*.vimeo.com/*'];
+const grantTestSites = () => {
+  const p = path.join(EXT, 'manifest.json');
+  const m = JSON.parse(fs.readFileSync(p));
+  m.host_permissions = [...(m.host_permissions || []), ...TEST_SITES];
+  fs.writeFileSync(p, JSON.stringify(m, null, 2));
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
 const logs = []; // the extension's service worker console
@@ -26,7 +36,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
     headless: false,
     viewport: null, // or Playwright resizes windows to 1280x720 whenever a page appears in them
     args: [`--disable-extensions-except=${ALL}`, `--load-extension=${ALL}`,
-      '--host-resolver-rules=MAP www.youtube.com 127.0.0.1:8443', '--no-proxy-server', '--ignore-certificate-errors',
+      '--host-resolver-rules=MAP www.youtube.com 127.0.0.1:8443, MAP www.twitch.tv 127.0.0.1:8443, MAP vimeo.com 127.0.0.1:8443, MAP player.vimeo.com 127.0.0.1:8443, MAP ads.example.com 127.0.0.1:8443', '--no-proxy-server', '--ignore-certificate-errors',
       '--autoplay-policy=no-user-gesture-required'],
   });
   const hook = (w) => w.on('console', (m) => logs.push(m.text()));
@@ -51,11 +61,12 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   // Reload the extension from chrome://extensions, as you do: the open
   // tabs keep only an orphaned content script.
   const ours = async () => {
-    for (const w of ctx.serviceWorkers()) if ((await w.evaluate(() => chrome.runtime.getManifest().name).catch(() => '')) === NAME) return w;
+    for (const w of ctx.serviceWorkers()) if ((await w.evaluate(() => chrome.runtime.getManifest().name).catch(() => '')).includes(NAME)) return w;
   };
   let first;
   for (let i = 0; i < 50 && !first; i++) { first = await ours(); if (!first) await sleep(200); }
   install(SRC);
+  grantTestSites();
   const ext = await ctx.newPage();
   await ext.goto('chrome://extensions');
   await ext.locator('#devMode').click();
@@ -255,6 +266,62 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   const winE = (await ev((id) => chrome.tabs.get(id), E.id)).windowId;
   await ev((id) => chrome.windows.remove(id), winE); await sleep(1000);
   check('closing the pop-out window removes the stand-in', (await windows()).length === 1 && (await placeholders()).length === 0);
+
+  // --- Other sites -----------------------------------------------------------
+  const coversWindow = (el) => { const r = el.getBoundingClientRect(); return r.left === 0 && r.top === 0 && r.width === innerWidth && r.height === innerHeight; };
+  const visible = (sel) => getComputedStyle(document.querySelector(sel)).visibility === 'visible';
+  const openPlaying = async (url, match) => {
+    const pg = await ctx.newPage(); await pg.goto(url); await sleep(800);
+    await pg.bringToFront(); await sleep(300);
+    const t = await tabByUrl(match);
+    await activate(B.id); await sleep(2500);
+    return { pg, t };
+  };
+  const poppedWindow = async (tabId) => (await windows()).find((w) => w.type === 'popup' && w.tabs.some((t) => t.id === tabId));
+
+  // A site you didn't choose: nothing happens.
+  let tw = await openPlaying('https://www.twitch.tv/somechannel', 'twitch.tv/somechannel');
+  check('not popped out on a site you did not choose', !(await poppedWindow(tw.t.id)));
+  await ev(() => setSite('twitch.tv', true));
+  check('site chosen: content script registered', (await ev(() => chrome.scripting.getRegisteredContentScripts())).some((c) => c.id === 'sites' && c.matches.includes('*://*.twitch.tv/*')));
+
+  // Twitch: the stream with sound pops out; its player box covers the window.
+  await tw.pg.bringToFront(); await sleep(300);
+  await activate(B.id); await sleep(2500);
+  let pw = await poppedWindow(tw.t.id);
+  check('Twitch: stream pops out', !!pw);
+  check('Twitch: title marked', (await tw.pg.title()).startsWith('[PopOut] '), await tw.pg.title());
+  check('Twitch: player box covers the window, despite the transformed <main>', await tw.pg.evaluate(`(${coversWindow})(document.querySelector('.player-wrap'))`));
+  check('Twitch: video covers the window', await tw.pg.evaluate(`(${coversWindow})(document.querySelector('video'))`));
+  check('Twitch: controls shown, chat and stream title hidden', await tw.pg.evaluate(`(${visible})('.controls') && !(${visible})('#chat') && !(${visible})('h1') && !(${visible})('#top-nav')`));
+  phs = await placeholders();
+  await activate(phs[0].id); await sleep(1500);
+  check('Twitch: back in place, page as before', !(await poppedWindow(tw.t.id)) && await tw.pg.evaluate(`document.querySelector('.player-wrap').getBoundingClientRect().width === 640 && (${visible})('#chat') && !document.querySelector('[data-pf-player],[data-pf-ancestor]')`));
+
+  await tw.pg.close(); await sleep(500); // still playing: leaving it would pop it out again
+
+  // Twitch home page: its big carousel video plays muted, not a pop-out.
+  const twHome = await openPlaying('https://www.twitch.tv/', 'twitch.tv/');
+  check('Twitch: muted autoplay on the home page does not pop out', !(await poppedWindow(twHome.t.id)));
+
+  // Vimeo: the video is in a frame from player.vimeo.com; that frame covers
+  // the window, and the player covers the frame. The ad frame from another
+  // site (no access) doesn't get in the way.
+  await ev(() => setSite('vimeo.com', true));
+  const vm = await openPlaying('https://vimeo.com/123', 'vimeo.com/123');
+  pw = await poppedWindow(vm.t.id);
+  check('Vimeo: video in a frame pops out', !!pw);
+  check('Vimeo: title marked', (await vm.pg.title()).startsWith('[PopOut] '), await vm.pg.title());
+  check('Vimeo: player frame covers the window, rest hidden', await vm.pg.evaluate(`(${coversWindow})(document.querySelector('.player-container iframe')) && !(${visible})('header') && !(${visible})('#ad')`));
+  const pf = vm.pg.frames().find((f) => f.url().includes('player.vimeo.com'));
+  check('Vimeo: player covers its frame, controls shown', !!pf && await pf.evaluate(`(${coversWindow})(document.querySelector('video')) && (${visible})('.vp-controls')`));
+  await vm.pg.bringToFront(); await vm.pg.keyboard.press('Escape'); await sleep(1500);
+  check('Vimeo: Escape brings it back', !(await poppedWindow(vm.t.id)) && (await placeholders()).length === 0
+    && await vm.pg.evaluate(`document.querySelector('.player-container iframe').getBoundingClientRect().width === 640`));
+
+  // Choosing a site off again unregisters it.
+  await ev(() => setSite('vimeo.com', false));
+  check('site removed: content script for twitch.tv only', (await ev(() => chrome.scripting.getRegisteredContentScripts())).every((c) => !c.matches.includes('*://*.vimeo.com/*')));
 
   console.log('--- service worker log ---\n' + logs.join('\n'));
   await ctx.close();

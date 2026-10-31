@@ -16,7 +16,29 @@ function log(...a) {
   });
 }
 
-const YT_URL = /^https?:\/\/www\.youtube\.com\//;
+// Sites: YouTube always, plus the ones you chose (right-click the toolbar
+// button → "Pop out videos on <site>"), stored as domains ("twitch.tv"),
+// each covering its subdomains (www.twitch.tv, player.vimeo.com).
+const YOUTUBE_HOST = "www.youtube.com";
+const hostOf = (url) => {
+  try {
+    const u = new URL(url);
+    return /^https?:$/.test(u.protocol) ? u.hostname : null;
+  } catch {
+    return null;
+  }
+};
+const siteOf = (url) => {
+  const h = hostOf(url);
+  return h && h.replace(/^www\./, "");
+};
+const sitePattern = (domain) => `*://*.${domain}/*`;
+const isYouTube = (url) => hostOf(url) === YOUTUBE_HOST;
+function siteEnabled(url) {
+  const h = hostOf(url);
+  if (!h) return false;
+  return h === YOUTUBE_HOST || state.sites.some((d) => h === d || h.endsWith("." + d));
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // State lives in memory and is mirrored to storage, because MV3 service
@@ -27,19 +49,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // tabs (Chromium closes an extension's pages) but not the popped-out videos.
 const state = {
   last: {},   // windowId -> last active tabId
-  popped: {}, // tabId -> { origin, index, win, placeholder, title, favIconUrl, url, since }
+  popped: {}, // tabId -> { origin, index, win, placeholder, title, favIconUrl, url, since, video }
+  sites: [],  // domains you chose, besides YouTube
 };
-const ready = Promise.all([chrome.storage.session.get(["last", "log"]), chrome.storage.local.get("popped")]).then(
+const ready = Promise.all([chrome.storage.session.get(["last", "log"]), chrome.storage.local.get(["popped", "sites"])]).then(
   ([r, l]) => {
     state.last = r.last || {};
     state.popped = l.popped || {};
+    state.sites = l.sites || [];
     logLines = [...(r.log || []), ...logLines];
   }
 );
 function save() {
   return Promise.all([
     chrome.storage.session.set({ last: state.last }),
-    chrome.storage.local.set({ popped: state.popped }),
+    chrome.storage.local.set({ popped: state.popped, sites: state.sites }),
   ]);
 }
 
@@ -106,11 +130,11 @@ async function seedLastActive() {
 }
 chrome.runtime.onInstalled.addListener(() => {
   serial(seedLastActive);
+  serial(syncSites); // dynamic content scripts don't survive an update
   serial(recoverPopOuts);
-  chrome.contextMenus.create({ id: "show-log", title: "Show pop-out log", contexts: ["action"] }, () => void chrome.runtime.lastError);
-});
-chrome.contextMenus.onClicked.addListener((info) => {
-  if (info.menuItemId === "show-log") chrome.tabs.create({ url: chrome.runtime.getURL("log.html") });
+  const menu = (item) => chrome.contextMenus.create({ contexts: ["action"], ...item }, () => void chrome.runtime.lastError);
+  menu({ id: "site", type: "checkbox", title: "Pop out videos on this site", enabled: false });
+  menu({ id: "show-log", title: "Show pop-out log" });
 });
 chrome.runtime.onStartup.addListener(() =>
   serial(async () => {
@@ -118,28 +142,116 @@ chrome.runtime.onStartup.addListener(() =>
     state.popped = {};
     await save();
     await seedLastActive();
+    await syncSites();
   })
 );
 
+// --- Sites you choose --------------------------------------------------------
+
+// The content script runs on YouTube (manifest) and, registered here, in
+// every frame of the sites you chose (a video may be in a frame from a
+// subdomain, e.g. player.vimeo.com).
+async function syncSites() {
+  // Drop sites whose access was taken away (e.g. in chrome://extensions).
+  const kept = [];
+  for (const d of state.sites) {
+    if (await chrome.permissions.contains({ origins: [sitePattern(d)] })) kept.push(d);
+    else log("no access to", d, "any more: dropping it");
+  }
+  state.sites = kept;
+  await save();
+  await chrome.scripting.unregisterContentScripts({ ids: ["sites"] }).catch(() => {});
+  if (state.sites.length) {
+    await chrome.scripting.registerContentScripts([
+      {
+        id: "sites",
+        matches: state.sites.map(sitePattern),
+        js: ["content.js"],
+        css: ["content.css"],
+        allFrames: true,
+        runAt: "document_idle",
+        persistAcrossSessions: true,
+      },
+    ]);
+  }
+  log("sites:", ["youtube.com", ...state.sites]);
+}
+
+async function setSite(domain, on) {
+  state.sites = state.sites.filter((d) => d !== domain);
+  if (on) state.sites.push(domain);
+  await save();
+  if (!on) await chrome.permissions.remove({ origins: [sitePattern(domain)] }).catch(() => {});
+  await syncSites();
+}
+
+// The menu entry follows the current tab's site.
+async function updateSiteMenu(tab) {
+  const d = tab && siteOf(tab.url);
+  const item = !d
+    ? { title: "Pop out videos on this site", checked: false, enabled: false }
+    : isYouTube(tab.url)
+      ? { title: "Pop out videos on youtube.com (always)", checked: true, enabled: false }
+      : { title: `Pop out videos on ${d}`, checked: state.sites.includes(d), enabled: true };
+  await chrome.contextMenus.update("site", item).catch(() => {});
+}
+async function updateSiteMenuForWindow(windowId) {
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+  const [tab] = await chrome.tabs.query({ active: true, windowId });
+  await ready;
+  await updateSiteMenu(tab);
+}
+chrome.windows.onFocusChanged.addListener((windowId) => updateSiteMenuForWindow(windowId).catch(() => {}));
+chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
+  if (change.url && tab.active) ready.then(() => updateSiteMenu(tab)).catch(() => {});
+});
+chrome.permissions.onRemoved.addListener(() => serial(syncSites));
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "show-log") chrome.tabs.create({ url: chrome.runtime.getURL("log.html") });
+  if (info.menuItemId !== "site" || !tab) return;
+  const d = siteOf(tab.url);
+  if (!d || isYouTube(tab.url)) return;
+  if (!info.checked) {
+    serial(() => setSite(d, false)).then(() => updateSiteMenu(tab));
+    return;
+  }
+  // Right away, while the click still counts as yours: Helium asks you.
+  chrome.permissions.request({ origins: [sitePattern(d)] }).then(
+    (granted) =>
+      serial(async () => {
+        if (granted) await setSite(d, true);
+        else log("access to", d, "refused");
+        await updateSiteMenu(tab);
+      }),
+    (e) => log("permission request failed:", e.message)
+  );
+});
+
 // --- Content script --------------------------------------------------------
 
-async function send(tabId, msg) {
+// To every frame of the tab, or to one.
+async function send(tabId, msg, frameId) {
   try {
-    return await chrome.tabs.sendMessage(tabId, msg);
+    return await chrome.tabs.sendMessage(tabId, msg, frameId == null ? undefined : { frameId });
   } catch {
     return undefined; // no content script (not YouTube, or tab is gone)
   }
 }
 
 // Tabs that were open before the extension was (re)loaded have no working
-// content script: inject it into them when needed.
-async function ensureContentScript(tab) {
-  if (!YT_URL.test(tab.url || "")) return false;
-  if (await send(tab.id, { type: "ping" })) return true;
+// content script, nor tabs of a site you just chose: inject it into them
+// when needed. any: also on other sites, when you pop out a tab yourself
+// (the toolbar button or the shortcut grant access to that tab).
+async function ensureContentScript(tab, any = false) {
+  const url = tab.url || "";
+  if (!hostOf(url) || !(any || siteEnabled(url))) return false;
+  if (await send(tab.id, { type: "ping" }, 0)) return true;
   log("injecting content script into tab", tab.id);
+  const target = { tabId: tab.id, allFrames: !isYouTube(url) };
   try {
-    await chrome.scripting.insertCSS({ target: { tabId: tab.id }, files: ["content.css"] });
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    await chrome.scripting.insertCSS({ target, files: ["content.css"] });
+    await chrome.scripting.executeScript({ target, files: ["content.js"] });
     return true;
   } catch (e) {
     log("injection failed:", e.message);
@@ -147,9 +259,28 @@ async function ensureContentScript(tab) {
   }
 }
 
-async function videoStatus(tab) {
-  if (!(await ensureContentScript(tab))) return null;
-  return (await send(tab.id, { type: "status" })) || null;
+// The frame with the video to pop out: the biggest one playing (with sound,
+// on other sites than YouTube), else (any) the biggest one.
+async function videoStatus(tab, any = false) {
+  if (!(await ensureContentScript(tab, any))) return null;
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: !isYouTube(tab.url) },
+      func: () => (globalThis.popoutStatus ? globalThis.popoutStatus() : null),
+    });
+  } catch (e) {
+    log("status failed:", e.message);
+    return null;
+  }
+  const frames = results.filter((r) => r.result).map((r) => ({ frameId: r.frameId, ...r.result }));
+  const byArea = (a, b) => b.area - a.area;
+  return (
+    frames.filter((f) => f.playing).sort(byArea)[0] ||
+    (any && frames.filter((f) => f.hasVideo).sort(byArea)[0]) ||
+    frames.find((f) => f.top) ||
+    null
+  );
 }
 
 // --- Displays --------------------------------------------------------------
@@ -244,8 +375,8 @@ async function recoverPopOuts() {
     }
     info.since = Date.now() - SETTLE_MS; // its stand-in may be switched to right away
     log("recovered pop-out of tab", tabId, "stand-in", info.placeholder);
-    await ensureContentScript(tab);
-    await send(tabId, { type: "popped", value: true });
+    await ensureContentScript(tab, true);
+    await send(tabId, { type: "popped", value: true }); // the frame with a big video takes it
   }
   await save();
 }
@@ -268,12 +399,18 @@ chrome.tabs.onAttached.addListener((tabId, { newWindowId, newPosition }) =>
   })
 );
 
-async function popOut(tab, auto = false) {
+// auto: because you switched away from it, with status (videoStatus) saying
+// which frame has the video.
+async function popOut(tab, auto = false, status = null) {
   const displays = await getDisplays();
   if (displays.length < 2) return log("only one display: not popping out");
 
   const tabId = tab.id;
   tab = await chrome.tabs.get(tabId);
+  if (!status) {
+    status = await videoStatus(tab, true);
+    log("popping out tab", tabId, "by hand:", status);
+  }
   const display = displayOf(await chrome.windows.get(tab.windowId), displays);
   const info = {
     origin: tab.windowId,
@@ -283,6 +420,7 @@ async function popOut(tab, auto = false) {
     favIconUrl: tab.favIconUrl || "",
     url: tab.url,
     since: Date.now(),
+    video: status ? status.token : undefined, // the frame with the video
   };
   const ph = await createStandIn(tabId, info, tab.windowId, tab.index + 1);
   if (auto) {
@@ -305,7 +443,7 @@ async function popOut(tab, auto = false) {
 
   // Set the "[PopOut]" title before the window exists, so a KWin rule sees
   // it from the start.
-  await send(tabId, { type: "popped", value: true });
+  await send(tabId, { type: "popped", value: true, video: info.video });
   await sleep(50);
 
   const b = initialBounds(display);
@@ -362,7 +500,7 @@ async function fullscreenIfMaximized(tabId) {
   info.fullscreenAt = Date.now();
   await save();
   await step("fullscreen", chrome.windows.update(info.win, { state: "fullscreen" }));
-  await send(tabId, { type: "popped", value: true }); // relayout at the final size
+  await send(tabId, { type: "popped", value: true, video: info.video }); // relayout at the final size
   // Put automatically: give focus back to the window you were working in.
   if (Date.now() - info.since < REFULLSCREEN_MS) await step("refocus", chrome.windows.update(info.origin, { focused: true }));
 }
@@ -516,6 +654,7 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
     const prevId = state.last[windowId];
     state.last[windowId] = tabId;
     await save();
+    chrome.tabs.get(tabId).then(updateSiteMenu, () => {});
 
     // Switched to the stand-in of a popped-out video: bring the video back.
     const owner = ownerOf(tabId);
@@ -545,7 +684,7 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
 
     const status = await videoStatus(prev);
     log("switched away from tab", prevId, status);
-    if (status && status.playing) await popOut(prev, true);
+    if (status && status.playing) await popOut(prev, true, status);
   })
 );
 

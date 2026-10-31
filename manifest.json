@@ -1,17 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "YouTube Pop-Out to Second Screen",
-  "version": "1.2",
-  "description": "When you switch away from a playing YouTube tab, move it to its own window, for KWin to put fullscreen on your other screen.",
+  "name": "Video Pop-Out to Second Screen",
+  "version": "1.3",
+  "description": "When you switch away from a playing video (YouTube, and the sites you choose), move it to its own window, for KWin to put fullscreen on your other screen.",
   "permissions": [
     "tabs",
     "system.display",
     "storage",
     "scripting",
-    "contextMenus"
+    "contextMenus",
+    "activeTab"
   ],
   "host_permissions": [
     "*://www.youtube.com/*"
+  ],
+  "optional_host_permissions": [
+    "*://*/*"
   ],
   "background": {
     "service_worker": "background.js"

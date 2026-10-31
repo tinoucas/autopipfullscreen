@@ -1,7 +1,8 @@
-# YouTube Pop-Out to Second Screen
+# Video Pop-Out to Second Screen
 
 A Chromium (MV3) extension, made for Helium on KDE Plasma: when you switch
-away from a YouTube tab whose video is playing, the tab moves into its own
+away from a tab whose video is playing (on YouTube, and on the sites you
+choose, e.g. Twitch or Vimeo), the tab moves into its own
 window, without tab strip or toolbar. With the KWin window rule below, that
 window goes fullscreen on your other screen.
 
@@ -27,8 +28,22 @@ maximum size that can't be changed.
   window removes the stand-in.
 - **Fullscreen:** when the video's window gets maximized (by KWin, or by
   you), the extension makes it fullscreen, without tab strip or toolbar.
-- Toolbar button or Alt+Shift+Y on a tab that isn't popped out pops it out.
+- Toolbar button or Alt+Shift+Y on a tab that isn't popped out pops it out,
+  on any site.
 - Nothing happens with a single screen.
+
+### Other sites than YouTube
+
+Right-click the toolbar button → **Pop out videos on twitch.tv** (the menu
+follows the current tab's site) and accept Helium's prompt; the same entry
+turns it off. A site covers its subdomains (vimeo.com covers
+player.vimeo.com, where Vimeo's player frame comes from).
+
+On those sites, the video popped out is the biggest one playing **with
+sound** (at least 320×180): muted autoplay, like the videos on Twitch's home
+page, doesn't count. Its player box (the element around the video, holding
+the site's own controls) covers the window and the rest of the page is
+hidden; when the player is in a frame, the frame covers the window.
 
 The window is a popup window: no tab strip or toolbar, only a thin read-only
 address bar that Chromium always shows on web pages in popups (fullscreen
@@ -72,11 +87,12 @@ extension → "service worker".)
 - `manifest.json`
 - `background.js`: tab switches, pop-out / bring back, the stand-in tab,
   fullscreen, the log
-- `content.js` / `content.css`: on YouTube, the "is it playing?" check, the
-  `[PopOut]` title, the player stretched over the window, Escape
+- `content.js` / `content.css`: on YouTube and the sites you chose, the
+  "is a video playing?" check, the `[PopOut]` title, the player stretched
+  over the window, Escape
 - `placeholder.html` / `placeholder.js`: the stand-in tab
 - `log.html` / `log.js`: the log page
-- `test/`: an end-to-end test against fake YouTube pages (`test/run.sh`; it
+- `test/`: an end-to-end test against fake YouTube, Twitch and Vimeo pages (`test/run.sh`; it
   needs Xvfb, openssl, Node with Playwright, and optionally openbox).
   `OTHER_EXT=<dir>` loads other extensions alongside, e.g. Static New Tab;
   `OLD_EXT=<dir>` starts from an older version and upgrades it in place.
