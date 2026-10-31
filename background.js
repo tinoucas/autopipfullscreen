@@ -1,6 +1,20 @@
-// Debug log: chrome://extensions → this extension → "service worker".
-const DEBUG = true;
-const log = (...a) => DEBUG && console.log("[popout]", ...a);
+// Log: right-click the toolbar button → "Show pop-out log" (log.html), or
+// chrome://extensions → this extension → "service worker".
+const LOG_MAX = 500;
+let logLines = [];
+let logSaving = null;
+const fmt = (a) => (typeof a === "string" ? a : a instanceof Error ? a.message : JSON.stringify(a));
+function log(...a) {
+  console.log("[popout]", ...a);
+  const t = new Date().toTimeString().slice(0, 8);
+  logLines.push(`${t} ${a.map(fmt).join(" ")}`);
+  if (logLines.length > LOG_MAX) logLines = logLines.slice(-LOG_MAX);
+  // Save at most twice a second.
+  logSaving ||= sleep(500).then(() => {
+    logSaving = null;
+    return chrome.storage.session.set({ log: logLines });
+  });
+}
 
 const YT_URL = /^https?:\/\/www\.youtube\.com\//;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -12,9 +26,10 @@ const state = {
   last: {},   // windowId -> last active tabId
   popped: {}, // tabId -> { origin, win, placeholder, title, favIconUrl, url, since }
 };
-const ready = chrome.storage.session.get(["last", "popped"]).then((r) => {
+const ready = chrome.storage.session.get(["last", "popped", "log"]).then((r) => {
   state.last = r.last || {};
   state.popped = r.popped || {};
+  logLines = [...(r.log || []), ...logLines];
 });
 function save() {
   return chrome.storage.session.set({ last: state.last, popped: state.popped });
@@ -65,7 +80,13 @@ async function seedLastActive() {
   }
   await save();
 }
-chrome.runtime.onInstalled.addListener(() => serial(seedLastActive));
+chrome.runtime.onInstalled.addListener(() => {
+  serial(seedLastActive);
+  chrome.contextMenus.create({ id: "show-log", title: "Show pop-out log", contexts: ["action"] }, () => void chrome.runtime.lastError);
+});
+chrome.contextMenus.onClicked.addListener((info) => {
+  if (info.menuItemId === "show-log") chrome.tabs.create({ url: chrome.runtime.getURL("log.html") });
+});
 chrome.runtime.onStartup.addListener(() => serial(seedLastActive));
 
 // --- Content script --------------------------------------------------------
@@ -101,19 +122,39 @@ async function videoStatus(tab) {
 
 // --- Displays --------------------------------------------------------------
 
-// The smallest display; on a tie, the non-primary one. (Under Wayland,
-// which display Chromium calls "primary" is a guess.)
-async function pickDisplay() {
+async function getDisplays() {
   const displays = await chrome.system.display.getInfo();
   log(
     "displays:",
     displays.map((d) => `${d.name || d.id} ${d.bounds.width}x${d.bounds.height}+${d.bounds.left}+${d.bounds.top}${d.isPrimary ? " primary" : ""}`)
   );
-  if (displays.length < 2) return null;
-  const area = (d) => d.bounds.width * d.bounds.height;
-  return displays.reduce((a, b) =>
-    area(b) < area(a) || (area(b) === area(a) && a.isPrimary) ? b : a
-  );
+  return displays;
+}
+
+// The display a window is on (by its centre), else the primary one. Under
+// Wayland, Chromium does not know where its windows are: then the primary.
+function displayOf(win, displays) {
+  const x = win.left + win.width / 2;
+  const y = win.top + win.height / 2;
+  const inside = (b) => x >= b.left && x < b.left + b.width && y >= b.top && y < b.top + b.height;
+  return displays.find((d) => inside(d.bounds)) || displays.find((d) => d.isPrimary) || displays[0];
+}
+
+// Where the pop-out window first appears: small, in the bottom-right corner
+// of the current screen, like a picture-in-picture window. A KWin script or
+// rule then moves it to the other screen and maximizes it (see README).
+// Under Wayland, the compositor decides the position anyway.
+function initialBounds(display) {
+  const wa = display.workArea;
+  const margin = 24;
+  const width = Math.min(wa.width - 2 * margin, Math.max(480, Math.round(wa.width * 0.3)));
+  const height = Math.min(wa.height - 2 * margin, Math.round((width * 9) / 16) + 90); // 16:9 video + tab strip and toolbar
+  return {
+    left: wa.left + wa.width - width - margin,
+    top: wa.top + wa.height - height - margin,
+    width,
+    height,
+  };
 }
 
 // --- Pop out / bring back --------------------------------------------------
@@ -135,11 +176,12 @@ function ownerOf(placeholderId) {
 }
 
 async function popOut(tab) {
-  const display = await pickDisplay();
-  if (!display) return log("only one display: not popping out");
+  const displays = await getDisplays();
+  if (displays.length < 2) return log("only one display: not popping out");
 
   const tabId = tab.id;
   tab = await chrome.tabs.get(tabId);
+  const display = displayOf(await chrome.windows.get(tab.windowId), displays);
   const info = {
     origin: tab.windowId,
     win: null,
@@ -167,7 +209,7 @@ async function popOut(tab) {
   await send(tabId, { type: "popped", value: true });
   await sleep(50);
 
-  const b = display.bounds;
+  const b = initialBounds(display);
   let win;
   try {
     win = await chrome.windows.create({
@@ -194,29 +236,50 @@ async function popOut(tab) {
   if (tab.active) await chrome.tabs.update(ph.id, { active: true }).catch(() => {});
   info.since = Date.now();
   await save();
-  log("popped out tab", tabId, "into window", win.id, "on", display.name || display.id, "placeholder", ph.id);
+  log("popped out tab", tabId, "into window", win.id, "placeholder", ph.id, "asked for", `${b.width}x${b.height}+${b.left}+${b.top}`, "on", display.name || display.id);
 
   // Outside the queue: window-manager work that may be slow.
   placeWindow(tabId, win.id, tab.windowId);
 }
 
-async function placeWindow(tabId, winId, originId) {
-  await sleep(250); // let the window manager place it before fullscreening
-  // Other extensions may add a tab to the new window (Static New Tab pins
-  // one in every window), which drops it out of fullscreen: for the first
-  // few seconds, put it back.
-  for (let i = 0; i < 5; i++) {
-    if (!state.popped[tabId]) return; // already brought back
-    const w = await step("get window", chrome.windows.get(winId, { populate: true }));
-    if (!w) return;
-    if (w.state !== "fullscreen") {
-      if (i) log("pop-out window left fullscreen (tabs:", w.tabs.length + "); fullscreen again");
-      await step("fullscreen", chrome.windows.update(winId, { state: "fullscreen" }));
-      await send(tabId, { type: "popped", value: true }); // relayout at the final size
-      // Give focus back to the window you were working in.
-      await step("refocus", chrome.windows.update(originId, { focused: true }));
+// Once the pop-out window is maximized (by a KWin rule or script, or by
+// you), make it fullscreen there: no tab strip or toolbar, only the video.
+// Another extension adding a tab to the window drops it out of fullscreen
+// (Static New Tab pins one in every window): soon after we fullscreened it,
+// do it again. Later, leaving fullscreen (F11) is up to you.
+const REFULLSCREEN_MS = 5000;
+
+async function fullscreenIfMaximized(tabId) {
+  const info = state.popped[tabId];
+  if (!info || info.win == null) return;
+  const w = await step("get window", chrome.windows.get(info.win));
+  if (!w || w.state !== "maximized") return;
+  if (info.fullscreenAt && Date.now() - info.fullscreenAt > REFULLSCREEN_MS) return;
+  log(info.fullscreenAt ? "pop-out window left fullscreen; fullscreen again" : "pop-out window maximized: fullscreen");
+  info.fullscreenAt = Date.now();
+  await save();
+  await step("fullscreen", chrome.windows.update(info.win, { state: "fullscreen" }));
+  await send(tabId, { type: "popped", value: true }); // relayout at the final size
+  // Put automatically: give focus back to the window you were working in.
+  if (Date.now() - info.since < REFULLSCREEN_MS) await step("refocus", chrome.windows.update(info.origin, { focused: true }));
+}
+
+chrome.windows.onBoundsChanged.addListener((win) => {
+  serial(async () => {
+    for (const [id, info] of Object.entries(state.popped)) {
+      if (info.win === win.id) fullscreenIfMaximized(Number(id)); // outside the queue
     }
-    await sleep(i ? 700 : 100);
+  });
+});
+
+async function placeWindow(tabId, winId, originId) {
+  // Give focus back to the window you were working in (focused: false is
+  // not always honoured).
+  await step("refocus", chrome.windows.update(originId, { focused: true }));
+  // In case a maximize came before we knew the window.
+  for (let i = 0; i < 6 && state.popped[tabId]; i++) {
+    await sleep(500);
+    await fullscreenIfMaximized(tabId);
   }
   const w = await step("get window", chrome.windows.get(winId, { populate: true }));
   if (w) {

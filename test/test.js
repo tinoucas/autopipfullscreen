@@ -24,6 +24,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
 (async () => {
   const ctx = await chromium.launchPersistentContext(fs.mkdtempSync(path.join(os.tmpdir(), 'popout-')), {
     headless: false,
+    viewport: null, // or Playwright resizes windows to 1280x720 whenever a page appears in them
     args: [`--disable-extensions-except=${ALL}`, `--load-extension=${ALL}`,
       '--host-resolver-rules=MAP www.youtube.com 127.0.0.1:8443', '--no-proxy-server', '--ignore-certificate-errors',
       '--autoplay-policy=no-user-gesture-required'],
@@ -77,8 +78,19 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   let ws = await windows();
   const popWin = ws.find((w) => w.tabs.some((t) => t.id === A.id));
   check('pop-out on the first switch after a fresh start, and after reload (re-injection)', ws.length === 2 && popWin.id !== B.windowId, `windows=${ws.length}`);
-  check('pop-out window is fullscreen', popWin && popWin.state === 'fullscreen', popWin && popWin.state);
-  check('chose the smaller display', logs.some((l) => l.includes('on small')));
+  const r = popWin && [popWin.left, popWin.top, popWin.width, popWin.height];
+  check('pop-out window starts small, bottom right of the current screen',
+    popWin && popWin.state === 'normal' && Math.abs(r[0] + r[2] - (1920 - 24)) < 30 && Math.abs(r[1] + r[3] - (1080 - 24)) < 30 && r[2] < 1000,
+    popWin && `${popWin.state} ${JSON.stringify(r)}`);
+  // Play KWin's part: maximize the window (on the other screen); the
+  // extension turns that into fullscreen.
+  await ev((id) => chrome.windows.update(id, { state: 'maximized' }), popWin.id); await sleep(1500);
+  const fs1 = (await ev((id) => chrome.windows.get(id), popWin.id)).state;
+  check('maximized pop-out window goes fullscreen', fs1 === 'fullscreen', fs1);
+  // Another extension adding a tab drops fullscreen: it is put back.
+  await ev((id) => chrome.tabs.create({ windowId: id, url: 'about:blank', active: false, pinned: true }), popWin.id); await sleep(1500);
+  const fs2 = (await ev((id) => chrome.windows.get(id), popWin.id)).state;
+  check('fullscreen again after a tab was added', fs2 === 'fullscreen', fs2);
   const titleChanges = await Promise.race([
     p0.evaluate(() => new Promise((r) => {
       let n = 0;
@@ -93,6 +105,10 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   // copy wins the title until the tab is reloaded.
   if (!process.env.OLD_EXT) check('title prefixed', (await p0.title()).startsWith('[PopOut] '), await p0.title());
   check('pf-popped class', await p0.evaluate(() => document.documentElement.classList.contains('pf-popped')));
+  check('log page has the log', await (async () => {
+    const lp = await ctx.newPage(); await lp.goto(`chrome-extension://${new URL(sw.url()).host}/log.html`); await sleep(500);
+    const t = await lp.locator('#log').textContent(); await lp.close(); return t.includes('popped out tab');
+  })());
   check('player fills viewport', await p0.evaluate(() => { const r = document.querySelector('#movie_player').getBoundingClientRect(); return r.width === innerWidth && r.height === innerHeight; }));
   check('origin window focused again', (await windows()).find((w) => w.id === B.windowId).focused);
 

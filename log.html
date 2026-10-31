@@ -1,0 +1,25 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Pop-out log</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; font: 14px system-ui, sans-serif; background: Canvas; color: CanvasText; }
+  header { position: sticky; top: 0; display: flex; gap: .5em; align-items: center; padding: .6em 1em; background: Canvas; border-bottom: 1px solid #8884; }
+  h1 { font-size: 1em; margin: 0 auto 0 0; }
+  button { font: inherit; padding: .3em .9em; }
+  pre { margin: 0; padding: 1em; font: 12px ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pop-out log</h1>
+  <span id="status" role="status"></span>
+  <button id="copy">Copy</button>
+  <button id="clear">Clear</button>
+</header>
+<pre id="log"></pre>
+<script src="log.js"></script>
+</body>
+</html>

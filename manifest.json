@@ -1,23 +1,43 @@
 {
   "manifest_version": 3,
   "name": "YouTube Pop-Out to Second Screen",
-  "version": "1.1",
-  "description": "When you switch away from a playing YouTube tab, move it to its own fullscreen window on the secondary display.",
-  "permissions": ["tabs", "system.display", "storage", "scripting"],
-  "host_permissions": ["*://www.youtube.com/*"],
-  "background": { "service_worker": "background.js" },
+  "version": "1.2",
+  "description": "When you switch away from a playing YouTube tab, move it to its own window, for KWin to put fullscreen on your other screen.",
+  "permissions": [
+    "tabs",
+    "system.display",
+    "storage",
+    "scripting",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "*://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["*://www.youtube.com/*"],
-      "js": ["content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "*://www.youtube.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     }
   ],
-  "action": { "default_title": "Pop out this video, or bring it back" },
+  "action": {
+    "default_title": "Pop out this video, or bring it back"
+  },
   "commands": {
     "toggle-popout": {
-      "suggested_key": { "default": "Alt+Shift+Y" },
+      "suggested_key": {
+        "default": "Alt+Shift+Y"
+      },
       "description": "Pop out this video, or bring it back"
     }
   }
