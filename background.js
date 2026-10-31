@@ -202,12 +202,47 @@ async function popOut(tab) {
 
 async function placeWindow(tabId, winId, originId) {
   await sleep(250); // let the window manager place it before fullscreening
-  await step("fullscreen", chrome.windows.update(winId, { state: "fullscreen" }));
-  await send(tabId, { type: "popped", value: true }); // relayout at the final size
-  // Give focus back to the window you were working in.
-  await step("refocus", chrome.windows.update(originId, { focused: true }));
-  const w = await step("get window", chrome.windows.get(winId));
-  if (w) log("pop-out window:", w.state, `${w.width}x${w.height}+${w.left}+${w.top}`, w.focused ? "focused" : "not focused");
+  // Other extensions may add a tab to the new window (Static New Tab pins
+  // one in every window), which drops it out of fullscreen: for the first
+  // few seconds, put it back.
+  for (let i = 0; i < 5; i++) {
+    if (!state.popped[tabId]) return; // already brought back
+    const w = await step("get window", chrome.windows.get(winId, { populate: true }));
+    if (!w) return;
+    if (w.state !== "fullscreen") {
+      if (i) log("pop-out window left fullscreen (tabs:", w.tabs.length + "); fullscreen again");
+      await step("fullscreen", chrome.windows.update(winId, { state: "fullscreen" }));
+      await send(tabId, { type: "popped", value: true }); // relayout at the final size
+      // Give focus back to the window you were working in.
+      await step("refocus", chrome.windows.update(originId, { focused: true }));
+    }
+    await sleep(i ? 700 : 100);
+  }
+  const w = await step("get window", chrome.windows.get(winId, { populate: true }));
+  if (w) {
+    log("pop-out window:", w.state, `${w.width}x${w.height}+${w.left}+${w.top}`, w.focused ? "focused" : "not focused",
+      "tabs:", w.tabs.map((t) => (t.pinned ? "pinned " : "") + (t.url || t.pendingUrl).slice(0, 60)));
+  }
+}
+
+// After the video left its pop-out window, close that window if nothing
+// worth keeping is left in it: only New Tab or extension pages (e.g. the
+// tab Static New Tab pins in every window).
+const DISPOSABLE = /^(chrome|edge|brave|vivaldi):\/\/(newtab|new-tab-page)\b|^about:blank|^chrome-extension:/;
+async function closeLeftover(winId) {
+  if (winId == null) return;
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ windowId: winId });
+  } catch {
+    return; // already closed
+  }
+  if (!tabs.length) return;
+  if (tabs.every((t) => DISPOSABLE.test(t.pendingUrl || t.url || ""))) {
+    await step("close pop-out window", chrome.windows.remove(winId));
+  } else {
+    log("keeping pop-out window", winId, "with", tabs.length, "tab(s)");
+  }
 }
 
 // Where to send a tab back to: the place of its stand-in, or else the focused
@@ -281,6 +316,7 @@ async function bringBack(tabId) {
   await send(tabId, { type: "popped", value: false });
   await step("activate", chrome.tabs.update(tabId, { active: true }));
   if (info.placeholder != null) await step("remove placeholder", chrome.tabs.remove(info.placeholder));
+  if (tab.windowId !== place.windowId) await closeLeftover(tab.windowId);
   await step("focus", chrome.windows.update(place.windowId, { focused: true }));
   log("brought tab", tabId, "back to window", place.windowId);
   return null;
@@ -315,7 +351,9 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
       log("placeholder", tabId, "activated by the pop-out itself");
     }
 
-    if (prevId == null || prevId === tabId) return;
+    if (prevId == null) return log("activated tab", tabId, "in window", windowId, "(no previous tab recorded)");
+    if (prevId === tabId) return;
+    log("activated tab", tabId, "in window", windowId, "after tab", prevId);
     if (state.popped[prevId]) return log("tab", prevId, "is already popped out");
 
     let prev;
@@ -378,6 +416,7 @@ chrome.tabs.onRemoved.addListener((tabId, { isWindowClosing }) =>
       delete state.popped[tabId];
       await save();
       if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
+      if (!isWindowClosing) await closeLeftover(info.win);
       return;
     }
     const owner = ownerOf(tabId);
@@ -389,9 +428,11 @@ chrome.tabs.onRemoved.addListener((tabId, { isWindowClosing }) =>
     } else {
       // The stand-in tab was closed: close the video too.
       log("placeholder", tabId, "closed: closing tab", owner);
+      const win = state.popped[owner].win;
       delete state.popped[owner];
       await save();
-      await chrome.tabs.remove(owner).catch(() => {});
+      await step("close video", chrome.tabs.remove(owner));
+      await closeLeftover(win);
     }
   })
 );

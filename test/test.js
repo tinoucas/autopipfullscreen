@@ -11,18 +11,23 @@ const install = (from) => fs.readdirSync(from)
   .filter((f) => /\.(json|js|css|html|png|svg)$/.test(f))
   .forEach((f) => fs.copyFileSync(path.join(from, f), path.join(EXT, f)));
 install(process.env.OLD_EXT || SRC);
+// OTHER_EXT=<dir>[,<dir>...]: also load these extensions (e.g. Static New Tab,
+// which pins a New Tab page in every window, the pop-out one included).
+const OTHERS = process.env.OTHER_EXT ? process.env.OTHER_EXT.split(',') : [];
+const ALL = [EXT, ...OTHERS].join(',');
+const NAME = JSON.parse(fs.readFileSync(path.join(SRC, 'manifest.json'))).name;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
+const logs = []; // the extension's service worker console
 const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') + name, extra); if (!ok) fails++; };
 
 (async () => {
   const ctx = await chromium.launchPersistentContext(fs.mkdtempSync(path.join(os.tmpdir(), 'popout-')), {
     headless: false,
-    args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
+    args: [`--disable-extensions-except=${ALL}`, `--load-extension=${ALL}`,
       '--host-resolver-rules=MAP www.youtube.com 127.0.0.1:8443', '--no-proxy-server', '--ignore-certificate-errors',
       '--autoplay-policy=no-user-gesture-required'],
   });
-  const logs = [];
   const hook = (w) => w.on('console', (m) => logs.push(m.text()));
   let sw;
   const ev = (fn, arg) => sw.evaluate(fn, arg);
@@ -44,15 +49,19 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   const pC = await ctx.newPage(); await pC.goto('https://www.youtube.com/watch?v=c&paused=1');
   // Reload the extension from chrome://extensions, as you do: the open
   // tabs keep only an orphaned content script.
-  const first = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker');
+  const ours = async () => {
+    for (const w of ctx.serviceWorkers()) if ((await w.evaluate(() => chrome.runtime.getManifest().name).catch(() => '')) === NAME) return w;
+  };
+  let first;
+  for (let i = 0; i < 50 && !first; i++) { first = await ours(); if (!first) await sleep(200); }
   install(SRC);
   const ext = await ctx.newPage();
   await ext.goto('chrome://extensions');
   await ext.locator('#devMode').click();
-  await ext.locator('#dev-reload-button').click();
+  await ext.locator('extensions-item', { hasText: NAME }).locator('#dev-reload-button').click();
   await sleep(1000);
   await ext.close();
-  for (let i = 0; i < 50 && !sw; i++) { await sleep(200); await [p0, pB, pC][i % 3].bringToFront(); sw = ctx.serviceWorkers().find((w) => w !== first); }
+  for (let i = 0; i < 50 && !sw; i++) { await sleep(200); await [p0, pB, pC][i % 3].bringToFront(); const w = await ours(); if (w && w !== first) sw = w; }
   if (!sw) throw new Error('no service worker after reload');
   hook(sw);
   await stubDisplays();
@@ -60,6 +69,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
 
   const A = await tabByUrl('v=a'), B = (await ev(() => chrome.tabs.query({}))).find((t) => t.url.endsWith('youtube.com/')), C = await tabByUrl('v=c');
   await activate(A.id); await sleep(300);
+  const home = (await ev((id) => chrome.tabs.get(id), A.id)).index; // after any pinned tab
   // As after a restart: nothing recorded yet, only what is active now.
   await ev(() => { state.last = {}; return seedLastActive(); });
   // Switch away from the playing video A.
@@ -87,7 +97,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('origin window focused again', (await windows()).find((w) => w.id === B.windowId).focused);
 
   let phs = await placeholders();
-  check('stand-in tab keeps its place', phs.length === 1 && phs[0].windowId === B.windowId && phs[0].index === 0 && !phs[0].active,
+  check('stand-in tab keeps its place', phs.length === 1 && phs[0].windowId === B.windowId && phs[0].index === home && !phs[0].active,
     JSON.stringify(phs.map((t) => [t.windowId, t.index, t.active])));
   check('stand-in tab has the video title', phs[0] && phs[0].title === 'Video a - YouTube', phs[0] && phs[0].title);
 
@@ -100,7 +110,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await p0.bringToFront(); await p0.keyboard.press('Escape'); await sleep(1000);
   ws = await windows();
   const back = (await ev((id) => chrome.tabs.get(id), A.id));
-  check('Escape brings it back', ws.length === 1 && back.windowId === B.windowId && back.index === 0, `windows=${ws.length} index=${back.index}`);
+  check('Escape brings it back', ws.length === 1 && back.windowId === B.windowId && back.index === home, `windows=${ws.length} index=${back.index}`);
   check('title restored', !(await p0.title()).startsWith('[PopOut]'));
   check('class removed', !(await p0.evaluate(() => document.documentElement.classList.contains('pf-popped'))));
   check('stand-in removed', (await placeholders()).length === 0);
@@ -112,7 +122,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await activate(phs[0].id); await sleep(1000);
   ws = await windows();
   const back2 = await ev((id) => chrome.tabs.get(id), A.id);
-  check('switching to the stand-in brings it back', ws.length === 1 && back2.windowId === B.windowId && back2.index === 0 && back2.active && (await placeholders()).length === 0,
+  check('switching to the stand-in brings it back', ws.length === 1 && back2.windowId === B.windowId && back2.index === home && back2.active && (await placeholders()).length === 0,
     `windows=${ws.length} index=${back2.index} active=${back2.active}`);
   check('video still playing after coming back', await p0.evaluate(() => !document.querySelector('video').paused));
 
@@ -165,7 +175,9 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('tearing off a playing tab is not a pop-out', ws.length === 2 && !ws.some((w) => w.state === 'fullscreen'), `windows=${ws.length}`);
 
   // Closing a playing tab must not pop anything out.
+  const torn = (await ev((id) => chrome.tabs.get(id), A.id)).windowId;
   await ev(([id, w]) => chrome.tabs.move(id, { windowId: w, index: 0 }), [A.id, B.windowId]);
+  await ev((w) => chrome.windows.remove(w).catch(() => {}), torn); // other extensions may have added tabs to it
   await activate(A.id); await sleep(300);
   await ev((id) => chrome.tabs.remove(id), A.id); await sleep(1200);
   check('closing a playing tab does not pop out', (await windows()).length === 1);
@@ -193,4 +205,4 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await ctx.close();
   console.log(fails ? `${fails} FAILED` : 'ALL PASSED');
   process.exit(fails ? 1 : 0);
-})().catch((e) => { console.error(e); process.exit(2); });
+})().catch((e) => { console.error(e); console.log('--- service worker log ---\n' + logs.join('\n')); process.exit(2); });
