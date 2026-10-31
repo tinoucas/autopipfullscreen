@@ -2,13 +2,20 @@
 // pre-installed Playwright Chromium. Run with test/run.sh.
 require('./server.js');
 const { chromium } = require('playwright');
-const EXT = require('path').resolve(__dirname, '..');
+const fs = require('fs'), path = require('path'), os = require('os');
+const SRC = path.resolve(__dirname, '..');
+// The extension is loaded from a copy. OLD_EXT=<dir> loads that version
+// first, then upgrades it to this one in place, like reloading after a pull.
+const EXT = fs.mkdtempSync(path.join(os.tmpdir(), 'popout-ext-'));
+const FILES = ['manifest.json', 'background.js', 'content.js', 'content.css'];
+const install = (from) => FILES.forEach((f) => fs.copyFileSync(path.join(from, f), path.join(EXT, f)));
+install(process.env.OLD_EXT || SRC);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fails = 0;
 const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') + name, extra); if (!ok) fails++; };
 
 (async () => {
-  const ctx = await chromium.launchPersistentContext(require('fs').mkdtempSync(require('path').join(require('os').tmpdir(), 'popout-')), {
+  const ctx = await chromium.launchPersistentContext(fs.mkdtempSync(path.join(os.tmpdir(), 'popout-')), {
     headless: false,
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`,
       '--host-resolver-rules=MAP www.youtube.com 127.0.0.1:8443', '--no-proxy-server', '--ignore-certificate-errors',
@@ -36,6 +43,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   // Reload the extension from chrome://extensions, as you do: the open
   // tabs keep only an orphaned content script.
   const first = ctx.serviceWorkers()[0] || await ctx.waitForEvent('serviceworker');
+  install(SRC);
   const ext = await ctx.newPage();
   await ext.goto('chrome://extensions');
   await ext.locator('#devMode').click();
@@ -57,7 +65,19 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('pop-out after extension reload (re-injection)', ws.length === 2 && popWin.id !== B.windowId, `windows=${ws.length}`);
   check('pop-out window is fullscreen', popWin && popWin.state === 'fullscreen', popWin && popWin.state);
   check('chose the smaller display', logs.some((l) => l.includes('on small')));
-  check('title prefixed', (await p0.title()).startsWith('[PopOut] '), await p0.title());
+  const titleChanges = await Promise.race([
+    p0.evaluate(() => new Promise((r) => {
+      let n = 0;
+      const o = new MutationObserver(() => n++);
+      o.observe(document.head, { childList: true, subtree: true, characterData: true });
+      setTimeout(() => { o.disconnect(); r(n); }, 1000);
+    })),
+    sleep(5000).then(() => 'page hung'),
+  ]);
+  check('page stays responsive, title settles', titleChanges === 0, `title changes in 1 s: ${titleChanges}`);
+  // After an upgrade from a version without the give-up rule, its orphaned
+  // copy wins the title until the tab is reloaded.
+  if (!process.env.OLD_EXT) check('title prefixed', (await p0.title()).startsWith('[PopOut] '), await p0.title());
   check('pf-popped class', await p0.evaluate(() => document.documentElement.classList.contains('pf-popped')));
   check('player fills viewport', await p0.evaluate(() => { const r = document.querySelector('#movie_player').getBoundingClientRect(); return r.width === innerWidth && r.height === innerHeight; }));
   check('origin window focused again', (await windows()).find((w) => w.id === B.windowId).focused);

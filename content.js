@@ -25,11 +25,26 @@
   }
 
   // Prefix the window title so a KWin rule or script can match the window.
+  // If something keeps undoing it (e.g. an orphaned copy of an older version
+  // of this script, still observing the title), give up instead of fighting:
+  // two observers rewriting the title forever hang the page and flood the
+  // browser with title updates.
+  let rewrites = 0;
+  let rewritesSince = 0;
   function applyTitle() {
     if (!alive()) return titleObserver.disconnect();
     const t = document.title;
-    if (popped && !t.startsWith(TAG)) document.title = TAG + t;
-    else if (!popped && t.startsWith(TAG)) document.title = t.slice(TAG.length);
+    let want = t;
+    if (popped && !t.startsWith(TAG)) want = TAG + t;
+    else if (!popped && t.startsWith(TAG)) want = t.slice(TAG.length);
+    if (want === t) return;
+    const now = Date.now();
+    if (now - rewritesSince > 2000) {
+      rewritesSince = now;
+      rewrites = 0;
+    }
+    if (++rewrites > 10) return;
+    document.title = want;
   }
   const titleObserver = new MutationObserver(applyTitle);
   titleObserver.observe(document.head, {
