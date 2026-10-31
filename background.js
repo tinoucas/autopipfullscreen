@@ -49,7 +49,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // tabs (Chromium closes an extension's pages) but not the popped-out videos.
 const state = {
   last: {},   // windowId -> last active tabId
-  popped: {}, // tabId -> { origin, index, win, placeholder, title, favIconUrl, url, since, video }
+  popped: {}, // tabId -> { origin, index, win, placeholder, title, url, since, video }
   sites: [],  // domains you chose, besides YouTube
 };
 const ready = Promise.all([chrome.storage.session.get(["last", "log"]), chrome.storage.local.get(["popped", "sites"])]).then(
@@ -348,7 +348,7 @@ function createStandIn(tabId, info, windowId, index) {
       url:
         chrome.runtime.getURL("placeholder.html") +
         "?" +
-        new URLSearchParams({ tab: tabId, title: info.title, icon: info.favIconUrl, url: info.url }),
+        new URLSearchParams({ tab: tabId, title: info.title, url: info.url }),
     })
   );
 }
@@ -417,7 +417,6 @@ async function popOut(tab, auto = false, status = null) {
     win: null,
     placeholder: null,
     title: stripTag(tab.title),
-    favIconUrl: tab.favIconUrl || "",
     url: tab.url,
     since: Date.now(),
     video: status ? status.token : undefined, // the frame with the video
@@ -711,14 +710,13 @@ chrome.commands.onCommand.addListener((cmd, tab) => {
   if (cmd === "toggle-popout") serial(() => toggle(tab));
 });
 
-// Keep the stand-in's title and icon in sync (e.g. autoplay of the next video).
+// Keep the stand-in's title in sync (e.g. autoplay of the next video).
 chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (!(change.title || change.favIconUrl)) return;
+  if (!change.title) return;
   serial(async () => {
     const info = state.popped[tabId];
     if (!info) return;
-    if (change.title) info.title = stripTag(change.title);
-    if (change.favIconUrl) info.favIconUrl = change.favIconUrl;
+    info.title = stripTag(change.title);
     await save();
   });
 });

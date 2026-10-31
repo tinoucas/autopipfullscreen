@@ -18,8 +18,8 @@ maximum size that can't be changed.
 ## Use
 
 - **Pop out:** play a video, switch to another tab. The video's tab moves to
-  its own window, and a **stand-in tab** keeps its place: same title (marked
-  with 📺) and icon.
+  its own window, and a **stand-in tab** keeps its place: same title, with
+  this extension's icon.
 - **Bring back:** switch to the stand-in tab, or press **Escape** in the
   video window, or click the toolbar button, or press **Alt+Shift+Y** from
   any window. The video comes back in place, still playing, and its window

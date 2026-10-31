@@ -133,7 +133,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   let phs = await placeholders();
   check('stand-in tab keeps its place', phs.length === 1 && phs[0].windowId === B.windowId && phs[0].index === home && !phs[0].active,
     JSON.stringify(phs.map((t) => [t.windowId, t.index, t.active])));
-  check('stand-in tab has the video title', phs[0] && phs[0].title === '📺 Video a - YouTube', phs[0] && phs[0].title);
+  check('stand-in tab has the video title and the extension icon', phs[0] && phs[0].title === 'Video a - YouTube' && /\/icons\/32\.png$/.test(phs[0].favIconUrl || ''), phs[0] && phs[0].title);
 
   // Hover preview on the home page (B) must not pop out; nor must a paused video (C).
   await activate(C.id); await sleep(800);

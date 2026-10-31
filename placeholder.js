@@ -1,24 +1,21 @@
-// Stand-in tab for a popped-out video: keeps its place, title and icon in
-// the original window. The background brings the video back when this tab
-// is activated; the button is there for when it is already active.
+// Stand-in tab for a popped-out video: keeps its place and title in the
+// original window, with this extension's icon to show it is popped out. The
+// background brings the video back when this tab is activated; the button is
+// there for when it is already active.
 const params = new URLSearchParams(location.search);
 const tabId = Number(params.get("tab"));
 
-// Marks the stand-in in the tab strip: its video plays on the other screen.
-const MARK = "📺 ";
-
-function render(title, icon) {
-  document.title = MARK + (title || "Video");
+function render(title) {
+  document.title = title || "Video";
   document.getElementById("title").textContent = title || "";
-  document.getElementById("icon").href = icon || "";
 }
-render(params.get("title"), params.get("icon"));
+render(params.get("title"));
 
 async function refresh() {
   const { popped = {} } = await chrome.storage.local.get("popped");
   const info = popped[tabId];
   if (info) {
-    render(info.title, info.favIconUrl);
+    render(info.title);
     document.getElementById("status").textContent = info.error || "";
   }
   return !!info;
