@@ -14,7 +14,10 @@ render(params.get("title"), params.get("icon"));
 async function refresh() {
   const { popped = {} } = await chrome.storage.session.get("popped");
   const info = popped[tabId];
-  if (info) render(info.title, info.favIconUrl);
+  if (info) {
+    render(info.title, info.favIconUrl);
+    document.getElementById("status").textContent = info.error || "";
+  }
   return !!info;
 }
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -29,5 +32,14 @@ refresh().then(async (live) => {
   if (!(await refresh())) document.body.classList.add("gone");
 });
 
-document.getElementById("back").onclick = () => chrome.runtime.sendMessage({ type: "bringBack", tabId });
+document.getElementById("back").onclick = async () => {
+  const status = document.getElementById("status");
+  status.textContent = "";
+  try {
+    const r = await chrome.runtime.sendMessage({ type: "bringBack", tabId });
+    if (r && r.error) status.textContent = r.error;
+  } catch (e) {
+    status.textContent = e.message;
+  }
+};
 document.getElementById("open").onclick = () => location.replace(params.get("url"));

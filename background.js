@@ -20,12 +20,53 @@ function save() {
   return chrome.storage.session.set({ last: state.last, popped: state.popped });
 }
 
+// A browser call that never answers must not block every later event, so
+// the queue moves on after a while (the late handler still finishes).
+const STUCK_MS = 10000;
 let queue = Promise.resolve();
 function serial(fn) {
   const run = queue.then(() => ready).then(fn);
-  queue = run.catch((e) => log("error:", e));
+  const done = run.catch((e) => log("error:", e && e.message, e));
+  queue = new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      log("a handler is still running after", STUCK_MS, "ms; moving on");
+      resolve();
+    }, STUCK_MS);
+    done.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
   return run;
 }
+
+// Logs a browser call that fails or takes long; never throws.
+async function step(name, promise) {
+  const t0 = Date.now();
+  const slow = setTimeout(() => log(name, "has not returned after 3 s"), 3000);
+  try {
+    const r = await promise;
+    if (Date.now() - t0 > 3000) log(name, "returned after", Date.now() - t0, "ms");
+    return r;
+  } catch (e) {
+    log(name, "failed:", e.message);
+    return undefined;
+  } finally {
+    clearTimeout(slow);
+  }
+}
+
+// After a reload or a restart, the tab active in each window has not been
+// "activated" yet: record it, so that switching away from it counts.
+async function seedLastActive() {
+  await ready;
+  for (const t of await chrome.tabs.query({ active: true })) {
+    if (!(t.windowId in state.last)) state.last[t.windowId] = t.id;
+  }
+  await save();
+}
+chrome.runtime.onInstalled.addListener(() => serial(seedLastActive));
+chrome.runtime.onStartup.addListener(() => serial(seedLastActive));
 
 // --- Content script --------------------------------------------------------
 
@@ -155,12 +196,18 @@ async function popOut(tab) {
   await save();
   log("popped out tab", tabId, "into window", win.id, "on", display.name || display.id, "placeholder", ph.id);
 
-  await sleep(250); // let the window manager place it before fullscreening
-  await chrome.windows.update(win.id, { state: "fullscreen" }).catch((e) => log("fullscreen failed:", e.message));
-  await send(tabId, { type: "popped", value: true }); // relayout at the final size
+  // Outside the queue: window-manager work that may be slow.
+  placeWindow(tabId, win.id, tab.windowId);
+}
 
+async function placeWindow(tabId, winId, originId) {
+  await sleep(250); // let the window manager place it before fullscreening
+  await step("fullscreen", chrome.windows.update(winId, { state: "fullscreen" }));
+  await send(tabId, { type: "popped", value: true }); // relayout at the final size
   // Give focus back to the window you were working in.
-  await chrome.windows.update(tab.windowId, { focused: true }).catch((e) => log("refocus failed:", e.message));
+  await step("refocus", chrome.windows.update(originId, { focused: true }));
+  const w = await step("get window", chrome.windows.get(winId));
+  if (w) log("pop-out window:", w.state, `${w.width}x${w.height}+${w.left}+${w.top}`, w.focused ? "focused" : "not focused");
 }
 
 // Where to send a tab back to: the place of its stand-in, or else the focused
@@ -178,32 +225,65 @@ async function returnPlace(info, incognito) {
   return w ? { windowId: w.id, index: -1 } : null;
 }
 
+// Returns an error message, or null when the video is back.
 async function bringBack(tabId) {
   const info = state.popped[tabId];
-  if (!info) return;
-  delete state.popped[tabId]; // first, so that removing the stand-in below does not close the video
-  await save();
-  await send(tabId, { type: "popped", value: false });
+  if (!info) return log("bring back: tab", tabId, "is not popped out"), "This video is not popped out.";
+  log("bringing back tab", tabId);
 
   let tab;
   try {
     tab = await chrome.tabs.get(tabId);
   } catch {
-    if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
-    return;
+    delete state.popped[tabId];
+    await save();
+    if (info.placeholder != null) await step("remove placeholder", chrome.tabs.remove(info.placeholder));
+    return "The video's tab is gone.";
   }
   const place = await returnPlace(info, tab.incognito);
   if (!place) {
     // No window to go back to: leave it here as a normal window.
     log("no window to return to; leaving tab", tabId, "where it is");
-    await chrome.windows.update(tab.windowId, { state: "normal" }).catch(() => {});
-    return;
+    delete state.popped[tabId];
+    await save();
+    await send(tabId, { type: "popped", value: false });
+    await step("leave fullscreen", chrome.windows.update(tab.windowId, { state: "normal" }));
+    return null;
   }
-  await chrome.tabs.move(tabId, place);
-  await chrome.tabs.update(tabId, { active: true });
-  if (info.placeholder != null) await chrome.tabs.remove(info.placeholder).catch(() => {});
-  await chrome.windows.update(place.windowId, { focused: true });
+
+  // Leave fullscreen first: moving a tab out of a fullscreen window can fail.
+  if (tab.windowId !== place.windowId) {
+    await step("leave fullscreen", chrome.windows.update(tab.windowId, { state: "normal" }));
+  }
+  let error = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await chrome.tabs.move(tabId, place);
+      error = null;
+      break;
+    } catch (e) {
+      error = e.message;
+      log("move back, attempt", attempt, "failed:", error);
+      await sleep(300);
+    }
+  }
+  if (error) {
+    // Still popped out: say why on the stand-in, and allow another try.
+    info.error = `Couldn't move the tab back: ${error}`;
+    await save();
+    return info.error;
+  }
+
+  // Forget the pop-out before removing the stand-in, or removing it would
+  // close the video.
+  delete state.popped[tabId];
+  await save();
+  await send(tabId, { type: "popped", value: false });
+  await step("activate", chrome.tabs.update(tabId, { active: true }));
+  if (info.placeholder != null) await step("remove placeholder", chrome.tabs.remove(info.placeholder));
+  await step("focus", chrome.windows.update(place.windowId, { focused: true }));
   log("brought tab", tabId, "back to window", place.windowId);
+  return null;
 }
 
 // Toolbar button and keyboard shortcut: bring back the popped-out video if
@@ -227,9 +307,12 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
 
     // Switched to the stand-in of a popped-out video: bring the video back.
     const owner = ownerOf(tabId);
-    if (owner != null && Date.now() - state.popped[owner].since > SETTLE_MS) {
-      log("placeholder", tabId, "activated");
-      return bringBack(owner);
+    if (owner != null) {
+      if (Date.now() - state.popped[owner].since > SETTLE_MS) {
+        log("placeholder", tabId, "activated");
+        return bringBack(owner);
+      }
+      log("placeholder", tabId, "activated by the pop-out itself");
     }
 
     if (prevId == null || prevId === tabId) return;
@@ -257,7 +340,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "bringBack") {
     // From the video's content script (Escape), or from its stand-in.
     const id = msg.tabId != null ? msg.tabId : tabId;
-    if (id != null) serial(() => bringBack(id));
+    if (id == null) return;
+    serial(() => bringBack(id)).then(
+      (error) => sendResponse({ error }),
+      (e) => sendResponse({ error: e.message })
+    );
+    return true;
   } else if (msg.type === "hello" && tabId != null) {
     // A content script just loaded: tell it whether its tab is popped out.
     serial(() => sendResponse({ popped: !!state.popped[tabId] }));

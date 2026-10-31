@@ -60,11 +60,13 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
 
   const A = await tabByUrl('v=a'), B = (await ev(() => chrome.tabs.query({}))).find((t) => t.url.endsWith('youtube.com/')), C = await tabByUrl('v=c');
   await activate(A.id); await sleep(300);
+  // As after a restart: nothing recorded yet, only what is active now.
+  await ev(() => { state.last = {}; return seedLastActive(); });
   // Switch away from the playing video A.
   await activate(B.id); await sleep(1500);
   let ws = await windows();
   const popWin = ws.find((w) => w.tabs.some((t) => t.id === A.id));
-  check('pop-out after extension reload (re-injection)', ws.length === 2 && popWin.id !== B.windowId, `windows=${ws.length}`);
+  check('pop-out on the first switch after a fresh start, and after reload (re-injection)', ws.length === 2 && popWin.id !== B.windowId, `windows=${ws.length}`);
   check('pop-out window is fullscreen', popWin && popWin.state === 'fullscreen', popWin && popWin.state);
   check('chose the smaller display', logs.some((l) => l.includes('on small')));
   const titleChanges = await Promise.race([
@@ -113,6 +115,28 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('switching to the stand-in brings it back', ws.length === 1 && back2.windowId === B.windowId && back2.index === 0 && back2.active && (await placeholders()).length === 0,
     `windows=${ws.length} index=${back2.index} active=${back2.active}`);
   check('video still playing after coming back', await p0.evaluate(() => !document.querySelector('video').paused));
+
+  // tabs.move failing once (e.g. "Tabs cannot be edited right now"): retried.
+  await activate(A.id); await sleep(300);
+  await activate(B.id); await sleep(2500);
+  await ev(() => { const m = chrome.tabs.move; let n = 0; globalThis.realMove = m;
+    chrome.tabs.move = (...a) => (n++ < 1 ? Promise.reject(new Error('Tabs cannot be edited right now')) : m(...a)); });
+  await activate((await placeholders())[0].id); await sleep(1500);
+  check('a failed move back is retried', (await windows()).length === 1 && (await placeholders()).length === 0);
+
+  // tabs.move failing every time: the button says why, and nothing is lost.
+  await activate(A.id); await sleep(300);
+  await activate(B.id); await sleep(2500);
+  await ev(() => { chrome.tabs.move = () => Promise.reject(new Error('Tabs cannot be edited right now')); });
+  const phPage = ctx.pages().find((q) => q.url().includes('placeholder.html'));
+  await phPage.bringToFront(); await sleep(1500);
+  const status = await phPage.locator('#status').textContent();
+  check('failed bring-back shown on the stand-in', status.includes('Tabs cannot be edited'), JSON.stringify(status));
+  await phPage.locator('#back').click(); await sleep(2000);
+  check('still popped out after a failed bring-back', (await windows()).length === 2 && (await placeholders()).length === 1);
+  await ev(() => { chrome.tabs.move = globalThis.realMove; });
+  await phPage.locator('#back').click(); await sleep(1500);
+  check('"Bring it back here" works', (await windows()).length === 1 && (await placeholders()).length === 0);
 
   // Rapid switching: A (playing) -> B -> C -> B quickly; A must pop out exactly once.
   await activate(A.id); await sleep(300);

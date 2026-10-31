@@ -13,6 +13,7 @@
   main { max-width: 40em; padding: 2em; text-align: center; }
   h1 { font-size: 1.4em; font-weight: 600; margin: 0 0 .5em; }
   p { color: #aaa; margin: 0 0 1.5em; }
+  #status { color: #f88; margin: 1.5em 0 0; }
   button {
     font: inherit; padding: .6em 1.2em; border: 0; border-radius: 2em;
     background: #f1f1f1; color: #0f0f0f; cursor: pointer;
@@ -25,6 +26,7 @@
   <h1 id="title"></h1>
   <p class="live">Playing on your other screen.</p>
   <button class="live" id="back">Bring it back here</button>
+  <p class="live" id="status" role="status"></p>
   <p class="orphan">This video is no longer popped out.</p>
   <button class="orphan" id="open">Open it here</button>
 </main>
