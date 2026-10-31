@@ -307,19 +307,34 @@ chrome.windows.onBoundsChanged.addListener((win) => {
   });
 });
 
+// For this long after it appears, the pop-out window must not keep the
+// focus: you are still working in your window (e.g. you just pressed Ctrl+T
+// and are typing an address), and keys typed into YouTube are shortcuts.
+const KEEP_FOCUS_MS = 3000;
+
 async function placeWindow(tabId, winId, originId) {
-  // Give focus back to the window you were working in (focused: false is
-  // not always honoured).
-  await step("refocus", chrome.windows.update(originId, { focused: true }));
-  // In case a maximize came before we knew the window.
-  for (let i = 0; i < 6 && state.popped[tabId]; i++) {
-    await sleep(500);
+  const start = Date.now();
+  let refocused = 0;
+  while (state.popped[tabId] && Date.now() - start < KEEP_FOCUS_MS) {
+    // Give focus back whenever the pop-out has it: the window manager may
+    // focus it only once it is shown (or fullscreened), after we asked
+    // for focused: false.
+    const w = await step("get window", chrome.windows.get(winId));
+    if (!w) return;
+    if (w.focused || refocused === 0) {
+      if (w.focused) log("pop-out window took the focus: giving it back");
+      refocused++;
+      await step("refocus", chrome.windows.update(originId, { focused: true }));
+    }
+    // In case a maximize came before we knew the window.
     await fullscreenIfMaximized(tabId);
+    await sleep(150);
   }
   const w = await step("get window", chrome.windows.get(winId, { populate: true }));
   if (w) {
     log("pop-out window:", w.state, `${w.width}x${w.height}+${w.left}+${w.top}`, w.focused ? "focused" : "not focused",
       "tabs:", w.tabs.map((t) => (t.pinned ? "pinned " : "") + (t.url || t.pendingUrl).slice(0, 60)));
+    if (w.focused) log("the pop-out window still has the focus: see README, Focus stealing prevention");
   }
 }
 

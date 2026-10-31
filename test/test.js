@@ -140,7 +140,13 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
 
   // Switching to the stand-in tab brings the video back in its place.
   await activate(A.id); await sleep(300);
-  await activate(B.id); await sleep(2500);
+  await activate(B.id); await sleep(600);
+  // The window manager focuses the pop-out once shown: focus goes back.
+  const popNow = (await windows()).find((w) => w.type === 'popup');
+  await ev((id) => chrome.windows.update(id, { focused: true }), popNow.id); await sleep(800);
+  const focusedWin = (await windows()).find((w) => w.focused);
+  check('focus goes back to your window when the pop-out takes it', focusedWin && focusedWin.id === B.windowId, focusedWin && focusedWin.type);
+  await sleep(1500);
   phs = await placeholders();
   await activate(phs[0].id); await lockTabs(800); await sleep(1800);
   ws = await windows();

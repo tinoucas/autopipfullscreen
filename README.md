@@ -49,11 +49,17 @@ window is created, so a rule matches it from the start.
   - Screen: **Force**, your secondary screen
   - Fullscreen: **Force**, Yes
   - No titlebar and frame: **Force**, Yes
+  - Focus stealing prevention: **Force**, Extreme: the window never takes
+    the focus when it appears, so you can keep typing where you were (e.g.
+    Ctrl+T and an address right away). The extension also gives the focus
+    back for a few seconds, but keys typed before that would go to YouTube,
+    where letters and digits are shortcuts.
 - Optional:
   - Virtual Desktop: **Force**, All Desktops
   - Keep above other windows: **Force**, Yes
-  - Focus stealing prevention: **Force**, Extreme (to keep the focus on the
-    window you were working in)
+  - Accept focus: **Force**, No, if the window should never take the
+    keyboard focus, even when clicked (the mouse still works on the video;
+    bring it back with the stand-in tab or Alt+Shift+Y instead of Escape)
 
 ## Troubleshooting
 
