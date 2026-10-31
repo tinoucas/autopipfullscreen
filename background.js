@@ -157,8 +157,8 @@ function displayOf(win, displays) {
 }
 
 // Where the pop-out window first appears: small, in the bottom-right corner
-// of the current screen, like a picture-in-picture window. A KWin script or
-// rule then moves it to the other screen and maximizes it (see README).
+// of the current screen, like a picture-in-picture window. A KWin rule then
+// moves it to the other screen (see README).
 // Under Wayland, the compositor decides the position anyway.
 function initialBounds(display) {
   const wa = display.workArea;
@@ -235,8 +235,8 @@ async function popOut(tab, auto = false) {
   state.popped[tabId] = info;
   await save();
 
-  // Set the "[PopOut]" title before the window exists, so a KWin rule or
-  // script sees it from the start.
+  // Set the "[PopOut]" title before the window exists, so a KWin rule sees
+  // it from the start.
   await send(tabId, { type: "popped", value: true });
   await sleep(50);
 
@@ -278,8 +278,7 @@ async function popOut(tab, auto = false) {
   placeWindow(tabId, win.id, tab.windowId);
 }
 
-// Once the pop-out window is maximized (by a KWin rule or script, or by
-// you), make it fullscreen there: no tab strip or toolbar, only the video.
+// Once the pop-out window is maximized (by a KWin rule, or by you), make it fullscreen there: no tab strip or toolbar, only the video.
 // Another extension adding a tab to the window drops it out of fullscreen
 // (Static New Tab pins one in every window): soon after we fullscreened it,
 // do it again. Later, leaving fullscreen (F11) is up to you.

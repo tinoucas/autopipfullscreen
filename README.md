@@ -2,9 +2,8 @@
 
 A Chromium (MV3) extension, made for Helium on KDE Plasma: when you switch
 away from a YouTube tab whose video is playing, the tab moves into its own
-window, without tab strip or toolbar. With the KWin script below, that window
-goes to your other screen, maximized and then fullscreen, on all desktops,
-above other windows, and the focus stays where you were working.
+window, without tab strip or toolbar. With the KWin window rule below, that
+window goes fullscreen on your other screen.
 
 This is an alternative to Chromium's picture-in-picture window, which has a
 maximum size that can't be changed.
@@ -12,7 +11,8 @@ maximum size that can't be changed.
 ## Install
 
 1. `chrome://extensions` → Developer mode → **Load unpacked** → this folder.
-2. Install the KWin script (see below), so the window goes to the right screen.
+2. Add the KWin window rule (see below), so the window goes to the right
+   screen.
 
 ## Use
 
@@ -32,78 +32,28 @@ maximum size that can't be changed.
 
 The window is a popup window: no tab strip or toolbar, only a thin read-only
 address bar that Chromium always shows on web pages in popups (fullscreen
-hides it too). It first appears small, at the bottom right of the current
-screen. Keeping it above other windows is up to KWin: extensions can't.
-On Wayland, Chromium can't place its own windows, so the position is up to
-KWin: without the script or a rule, it may appear elsewhere.
+hides it too). It asks to appear small, at the bottom right of the current
+screen; on Wayland, Chromium can't place its own windows, so the position is
+up to KWin, hence the rule. Keeping it above other windows or on all desktops
+is up to KWin too: extensions can't.
 
-## KWin (Plasma 6, Wayland or X11)
+## KWin window rule (Plasma 6, Wayland or X11)
 
-The extension adds `[PopOut]` to the title of the video's window. Either use
-the script (recommended) or a window rule, not both. If you still have an
-older rule that forces this window fullscreen, disable it: the extension
-makes it fullscreen itself, once KWin has maximized it on the right screen.
-
-### Script (recommended)
-
-It moves the window to the smallest screen (or the one you name), maximizes
-it, puts it on all desktops, keeps it above other windows, and gives the
-focus back to the window you were in. It also reacts if the mark appears in the title later.
-
-```bash
-kpackagetool6 --type=KWin/Script --install kwin
-```
-
-To update it after a pull, use `--upgrade` instead of `--install`.
-
-Enable it in **System Settings → Window Management → KWin Scripts →
-YouTube Pop-Out placement**, or from a terminal:
-
-```bash
-kwriteconfig6 --file kwinrc --group Plugins --key youtube-popoutEnabled true
-```
-
-```bash
-qdbus6 org.kde.KWin /KWin reconfigure
-```
-
-To use a given screen rather than the smallest one, use its name from
-`kscreen-doctor -o`:
-
-```bash
-kwriteconfig6 --file kwinrc --group Script-youtube-popout --key Output HDMI-A-1
-```
-
-To not keep it above other windows:
-
-```bash
-kwriteconfig6 --file kwinrc --group Script-youtube-popout --key KeepAbove false
-```
-
-After changing a setting, run `qdbus6 org.kde.KWin /KWin reconfigure`.
-
-The script logs to the journal:
-
-```bash
-journalctl --user -f | grep youtube-popout
-```
-
-### Window rule (alternative)
+The extension adds `[PopOut]` to the title of the video's window, before the
+window is created, so a rule matches it from the start.
 
 **System Settings → Window Management → Window Rules → Add New**:
 
 - Window title: **Substring Match**, `[PopOut]`
 - Add properties:
   - Screen: **Force**, your secondary screen
-  - Maximized horizontally: **Apply Initially**, Yes
-  - Maximized vertically: **Apply Initially**, Yes
+  - Fullscreen: **Force**, Yes
+  - No titlebar and frame: **Force**, Yes
+- Optional:
   - Virtual Desktop: **Force**, All Desktops
   - Keep above other windows: **Force**, Yes
-  - Focus stealing prevention: **Force**, Extreme (keeps the focus on your
-    window)
-
-A rule is matched when the window appears; the extension sets the title
-before creating the window, so the mark is there from the start.
+  - Focus stealing prevention: **Force**, Extreme (to keep the focus on the
+    window you were working in)
 
 ## Troubleshooting
 
@@ -120,7 +70,6 @@ extension → "service worker".)
   `[PopOut]` title, the player stretched over the window, Escape
 - `placeholder.html` / `placeholder.js`: the stand-in tab
 - `log.html` / `log.js`: the log page
-- `kwin/`: the KWin script
 - `test/`: an end-to-end test against fake YouTube pages (`test/run.sh`; it
   needs Xvfb, openssl, Node with Playwright, and optionally openbox).
   `OTHER_EXT=<dir>` loads other extensions alongside, e.g. Static New Tab;
