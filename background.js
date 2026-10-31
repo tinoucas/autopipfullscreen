@@ -49,7 +49,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // tabs (Chromium closes an extension's pages) but not the popped-out videos.
 const state = {
   last: {},   // windowId -> last active tabId
-  popped: {}, // tabId -> { origin, index, win, placeholder, title, url, since, video }
+  popped: {}, // tabId -> { origin, index, win, placeholder, title, audible, muted, url, since, video }
   sites: [],  // domains you chose, besides YouTube
 };
 const ready = Promise.all([chrome.storage.session.get(["last", "log"]), chrome.storage.local.get(["popped", "sites"])]).then(
@@ -374,6 +374,8 @@ async function recoverPopOuts() {
       }
     }
     info.since = Date.now() - SETTLE_MS; // its stand-in may be switched to right away
+    info.audible = !!tab.audible;
+    info.muted = !!(tab.mutedInfo && tab.mutedInfo.muted);
     log("recovered pop-out of tab", tabId, "stand-in", info.placeholder);
     await ensureContentScript(tab, true);
     await send(tabId, { type: "popped", value: true }); // the frame with a big video takes it
@@ -417,6 +419,8 @@ async function popOut(tab, auto = false, status = null) {
     win: null,
     placeholder: null,
     title: stripTag(tab.title),
+    audible: !!tab.audible,
+    muted: !!(tab.mutedInfo && tab.mutedInfo.muted),
     url: tab.url,
     since: Date.now(),
     video: status ? status.token : undefined, // the frame with the video
@@ -710,13 +714,17 @@ chrome.commands.onCommand.addListener((cmd, tab) => {
   if (cmd === "toggle-popout") serial(() => toggle(tab));
 });
 
-// Keep the stand-in's title in sync (e.g. autoplay of the next video).
+// Keep the stand-in's title in sync (e.g. autoplay of the next video), and
+// whether the video plays sound or is muted: the stand-in shows it, as
+// Chromium shows it on the tab that plays.
 chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (!change.title) return;
+  if (!(change.title || "audible" in change || change.mutedInfo)) return;
   serial(async () => {
     const info = state.popped[tabId];
     if (!info) return;
-    info.title = stripTag(change.title);
+    if (change.title) info.title = stripTag(change.title);
+    if ("audible" in change) info.audible = change.audible;
+    if (change.mutedInfo) info.muted = change.mutedInfo.muted;
     await save();
   });
 });

@@ -35,6 +35,7 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   const ctx = await chromium.launchPersistentContext(fs.mkdtempSync(path.join(os.tmpdir(), 'popout-')), {
     headless: false,
     viewport: null, // or Playwright resizes windows to 1280x720 whenever a page appears in them
+    ignoreDefaultArgs: ['--mute-audio'], // so that tabs playing sound say so
     args: [`--disable-extensions-except=${ALL}`, `--load-extension=${ALL}`,
       '--host-resolver-rules=MAP www.youtube.com 127.0.0.1:8443, MAP www.twitch.tv 127.0.0.1:8443, MAP vimeo.com 127.0.0.1:8443, MAP player.vimeo.com 127.0.0.1:8443, MAP ads.example.com 127.0.0.1:8443', '--no-proxy-server', '--ignore-certificate-errors',
       '--autoplay-policy=no-user-gesture-required'],
@@ -294,6 +295,18 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   check('Twitch: player box covers the window, despite the transformed <main>', await tw.pg.evaluate(`(${coversWindow})(document.querySelector('.player-wrap'))`));
   check('Twitch: video covers the window', await tw.pg.evaluate(`(${coversWindow})(document.querySelector('video'))`));
   check('Twitch: controls shown, chat and stream title hidden', await tw.pg.evaluate(`(${visible})('.controls') && !(${visible})('#chat') && !(${visible})('h1') && !(${visible})('#top-nav')`));
+  // The stand-in shows the video's sound, as Chromium does on the tab playing.
+  const standInTitle = async () => (await placeholders())[0]?.title || '';
+  let tTitle = '';
+  for (let i = 0; i < 20 && !tTitle.startsWith('🔊 '); i++) { await sleep(250); tTitle = await standInTitle(); }
+  check('Twitch: stand-in shows 🔊 while the video plays sound', tTitle === '🔊 somechannel - Twitch', tTitle);
+  await ev((id) => chrome.tabs.update(id, { muted: true }), tw.t.id); await sleep(800);
+  check('Twitch: stand-in shows 🔇 when the tab is muted', (await standInTitle()).startsWith('🔇 '), await standInTitle());
+  await ev((id) => chrome.tabs.update(id, { muted: false }), tw.t.id);
+  await tw.pg.evaluate(() => document.querySelector('video').pause());
+  for (let i = 0; i < 20 && (tTitle = await standInTitle()).match(/^(🔊|🔇) /); i++) await sleep(250);
+  check('Twitch: no sound mark once paused', tTitle === 'somechannel - Twitch', tTitle);
+  await tw.pg.evaluate(() => document.querySelector('video').play());
   phs = await placeholders();
   await activate(phs[0].id); await sleep(1500);
   check('Twitch: back in place, page as before', !(await poppedWindow(tw.t.id)) && await tw.pg.evaluate(`document.querySelector('.player-wrap').getBoundingClientRect().width === 640 && (${visible})('#chat') && !document.querySelector('[data-pf-player],[data-pf-ancestor]')`));

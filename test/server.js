@@ -17,7 +17,11 @@ const c = document.createElement('canvas'); c.width = 320; c.height = 180;
 const g = c.getContext('2d'); let i = 0;
 setInterval(() => { g.fillStyle = 'hsl(' + (i++ % 360) + ',50%,50%)'; g.fillRect(0, 0, 320, 180); }, 50);
 const v = document.querySelector('${selector}');
-v.srcObject = c.captureStream(20); v.muted = ${muted}; ${play ? 'v.play();' : ''}
+const s = c.captureStream(20);
+${muted ? '' : `// A quiet tone, so the tab plays sound.
+const ac = new AudioContext(), osc = ac.createOscillator(), gain = ac.createGain(), out = ac.createMediaStreamDestination();
+gain.gain.value = 0.02; osc.connect(gain).connect(out); osc.start(); s.addTrack(out.stream.getAudioTracks()[0]);`}
+v.srcObject = s; v.muted = ${muted}; ${play ? 'v.play();' : ''}
 </script>`;
 
 const youtube = (title, inPlayer, play) => `<!doctype html><title>${title}</title>

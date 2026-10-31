@@ -5,8 +5,11 @@
 const params = new URLSearchParams(location.search);
 const tabId = Number(params.get("tab"));
 
-function render(title) {
-  document.title = title || "Video";
+// Chromium shows a speaker on the tab playing sound: the popped-out video's
+// tab, out of sight. Show it here too, in the title.
+function render(title, audible, muted) {
+  const sound = muted ? "🔇 " : audible ? "🔊 " : "";
+  document.title = sound + (title || "Video");
   document.getElementById("title").textContent = title || "";
 }
 render(params.get("title"));
@@ -15,7 +18,7 @@ async function refresh() {
   const { popped = {} } = await chrome.storage.local.get("popped");
   const info = popped[tabId];
   if (info) {
-    render(info.title);
+    render(info.title, info.audible, info.muted);
     document.getElementById("status").textContent = info.error || "";
   }
   return !!info;
