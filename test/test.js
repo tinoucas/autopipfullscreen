@@ -197,6 +197,32 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await ev(async (id) => toggle(await chrome.tabs.get(id)), phs[0].id); await sleep(1000);
   check('toolbar on the stand-in brings it back', (await windows()).length === 1 && (await ev((id) => chrome.tabs.get(id), A.id)).active && (await placeholders()).length === 0);
 
+  // Reloading (upgrading) the extension while a video is popped out:
+  // Chromium closes the stand-in tab; it must come back in its place, and
+  // the video must stay popped out.
+  await activate(A.id); await sleep(300);
+  await activate(B.id); await sleep(2500);
+  const before = (await placeholders())[0];
+  {
+    const old = sw; sw = null;
+    const ext2 = await ctx.newPage(); await ext2.goto('chrome://extensions');
+    await ext2.locator('extensions-item', { hasText: NAME }).locator('#dev-reload-button').click();
+    await sleep(1000); await ext2.close();
+    for (let i = 0; i < 50 && !sw; i++) { await sleep(200); const w = await ours(); if (w && w !== old) sw = w; }
+    if (!sw) throw new Error('no service worker after the second reload');
+    hook(sw); await stubDisplays(); await sleep(1500);
+  }
+  phs = await placeholders();
+  check('stand-in back in its place after reloading the extension', phs.length === 1 && before && phs[0].id !== before.id && phs[0].windowId === before.windowId && phs[0].index === before.index,
+    JSON.stringify([before && [before.windowId, before.index], phs.map((t) => [t.windowId, t.index])]));
+  check('video still popped out after reloading the extension', (await windows()).some((w) => w.type === 'popup' && w.tabs.some((t) => t.id === A.id)));
+  if (!process.env.OLD_EXT) check('title still marked after reloading the extension', (await p0.title()).startsWith('[PopOut] '), await p0.title());
+  await activate(phs[0].id); await sleep(1500);
+  const back3 = await ev((id) => chrome.tabs.get(id), A.id);
+  check('switching to the recovered stand-in brings the video back', (await windows()).length === 1 && back3.windowId === B.windowId && back3.index === home && (await placeholders()).length === 0,
+    `windows=${(await windows()).length} index=${back3.index}`);
+  check('player back to normal', !(await p0.evaluate(() => document.documentElement.classList.contains('pf-popped'))));
+
   // Dragging a playing tab into its own window must not trigger a pop-out.
   await activate(A.id); await sleep(300);
   await ev((id) => chrome.windows.create({ tabId: id }), A.id); await sleep(1500);

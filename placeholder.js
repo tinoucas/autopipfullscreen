@@ -15,7 +15,7 @@ function render(title, icon) {
 render(params.get("title"), params.get("icon"));
 
 async function refresh() {
-  const { popped = {} } = await chrome.storage.session.get("popped");
+  const { popped = {} } = await chrome.storage.local.get("popped");
   const info = popped[tabId];
   if (info) {
     render(info.title, info.favIconUrl);
@@ -24,7 +24,7 @@ async function refresh() {
   return !!info;
 }
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "session" && changes.popped) refresh();
+  if (area === "local" && changes.popped) refresh();
 });
 
 // Left over (e.g. restored after a browser restart): offer to reopen the

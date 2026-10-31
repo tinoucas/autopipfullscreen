@@ -2,7 +2,7 @@
 // must not redeclare top-level constants.
 {
   const TAG = "[PopOut] ";
-  let popped = false;
+  let popped = null; // unknown until the background answers "hello"
 
   // After the extension is reloaded, this copy of the script is orphaned: its
   // chrome.runtime calls throw. The background injects a fresh copy.
@@ -33,6 +33,7 @@
   let rewritesSince = 0;
   function applyTitle() {
     if (!alive()) return titleObserver.disconnect();
+    if (popped === null) return; // don't touch the title before we know
     const t = document.title;
     let want = t;
     if (popped && !t.startsWith(TAG)) want = TAG + t;
@@ -53,10 +54,13 @@
     characterData: true,
   });
 
-  function setPopped(value) {
+  // relayout: the window changed size (e.g. it went fullscreen).
+  function setPopped(value, relayout = false) {
+    const changed = value !== document.documentElement.classList.contains("pf-popped");
     popped = value;
     document.documentElement.classList.toggle("pf-popped", value);
     applyTitle();
+    if (!changed && !relayout) return;
     // Nudge YouTube to recompute the player size.
     for (const ms of [100, 600, 1500]) {
       setTimeout(() => window.dispatchEvent(new Event("resize")), ms);
@@ -67,18 +71,19 @@
     if (msg.type === "ping") sendResponse(true);
     else if (msg.type === "status") sendResponse(status());
     else if (msg.type === "popped") {
-      setPopped(msg.value);
+      setPopped(msg.value, true);
       sendResponse(true);
     }
   });
 
-  // Undo what an orphaned copy may have left, then ask (after a full page
-  // load or a re-injection) whether this tab is popped out.
-  document.documentElement.classList.remove("pf-popped");
-  applyTitle();
+  // Ask (after a full page load, or a re-injection after the extension was
+  // reloaded) whether this tab is popped out, then set or undo what an
+  // orphaned copy may have left. Nothing is changed before the answer: the
+  // "[PopOut]" title must not flicker, or the KWin rule may let go of the
+  // window.
   chrome.runtime
     .sendMessage({ type: "hello" })
-    .then((r) => r && r.popped && setPopped(true))
+    .then((r) => setPopped(!!(r && r.popped)))
     .catch(() => {});
 
   // Escape in the pop-out window sends the tab back to where it came from.

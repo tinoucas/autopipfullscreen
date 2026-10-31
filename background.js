@@ -19,20 +19,28 @@ function log(...a) {
 const YT_URL = /^https?:\/\/www\.youtube\.com\//;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// State lives in memory and is mirrored to storage.session, because MV3
-// service workers can be suspended. Every event handler runs through
-// serial() one after another, so there is no read-modify-write race.
+// State lives in memory and is mirrored to storage, because MV3 service
+// workers can be suspended. Every event handler runs through serial() one
+// after another, so there is no read-modify-write race.
+// The pop-outs are kept in storage.local: unlike storage.session, it
+// survives reloading or upgrading the extension, which closes the stand-in
+// tabs (Chromium closes an extension's pages) but not the popped-out videos.
 const state = {
   last: {},   // windowId -> last active tabId
-  popped: {}, // tabId -> { origin, win, placeholder, title, favIconUrl, url, since }
+  popped: {}, // tabId -> { origin, index, win, placeholder, title, favIconUrl, url, since }
 };
-const ready = chrome.storage.session.get(["last", "popped", "log"]).then((r) => {
-  state.last = r.last || {};
-  state.popped = r.popped || {};
-  logLines = [...(r.log || []), ...logLines];
-});
+const ready = Promise.all([chrome.storage.session.get(["last", "log"]), chrome.storage.local.get("popped")]).then(
+  ([r, l]) => {
+    state.last = r.last || {};
+    state.popped = l.popped || {};
+    logLines = [...(r.log || []), ...logLines];
+  }
+);
 function save() {
-  return chrome.storage.session.set({ last: state.last, popped: state.popped });
+  return Promise.all([
+    chrome.storage.session.set({ last: state.last }),
+    chrome.storage.local.set({ popped: state.popped }),
+  ]);
 }
 
 // A browser call that never answers must not block every later event, so
@@ -98,12 +106,20 @@ async function seedLastActive() {
 }
 chrome.runtime.onInstalled.addListener(() => {
   serial(seedLastActive);
+  serial(recoverPopOuts);
   chrome.contextMenus.create({ id: "show-log", title: "Show pop-out log", contexts: ["action"] }, () => void chrome.runtime.lastError);
 });
 chrome.contextMenus.onClicked.addListener((info) => {
   if (info.menuItemId === "show-log") chrome.tabs.create({ url: chrome.runtime.getURL("log.html") });
 });
-chrome.runtime.onStartup.addListener(() => serial(seedLastActive));
+chrome.runtime.onStartup.addListener(() =>
+  serial(async () => {
+    // Tabs from the previous browser session are gone (or have new ids).
+    state.popped = {};
+    await save();
+    await seedLastActive();
+  })
+);
 
 // --- Content script --------------------------------------------------------
 
@@ -192,6 +208,66 @@ function ownerOf(placeholderId) {
 }
 
 // auto: because you switched away from it (not the toolbar or shortcut).
+function createStandIn(tabId, info, windowId, index) {
+  return whenEditable("create stand-in", () =>
+    chrome.tabs.create({
+      windowId,
+      index,
+      active: false,
+      url:
+        chrome.runtime.getURL("placeholder.html") +
+        "?" +
+        new URLSearchParams({ tab: tabId, title: info.title, icon: info.favIconUrl, url: info.url }),
+    })
+  );
+}
+
+// After the extension was reloaded or upgraded: the popped-out videos are
+// still there, but Chromium closed their stand-in tabs, and their content
+// scripts are orphaned. Put the stand-ins back where they were, and
+// reconnect the videos.
+async function recoverPopOuts() {
+  for (const [id, info] of Object.entries(state.popped)) {
+    const tabId = Number(id);
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (!tab || tab.windowId !== info.win) {
+      delete state.popped[id];
+      continue;
+    }
+    if (!(info.placeholder != null && (await chrome.tabs.get(info.placeholder).catch(() => null)))) {
+      info.placeholder = null;
+      if (await chrome.windows.get(info.origin).catch(() => null)) {
+        const count = (await chrome.tabs.query({ windowId: info.origin })).length;
+        const ph = await createStandIn(tabId, info, info.origin, Math.min(info.index ?? count, count)).catch((e) => log("stand-in:", e.message));
+        if (ph) info.placeholder = ph.id;
+      }
+    }
+    info.since = Date.now() - SETTLE_MS; // its stand-in may be switched to right away
+    log("recovered pop-out of tab", tabId, "stand-in", info.placeholder);
+    await ensureContentScript(tab);
+    await send(tabId, { type: "popped", value: true });
+  }
+  await save();
+}
+
+// Keep track of where each stand-in is, to put it back there if needed.
+chrome.tabs.onMoved.addListener((tabId, { windowId, toIndex }) =>
+  serial(async () => {
+    const owner = ownerOf(tabId);
+    if (owner == null) return;
+    Object.assign(state.popped[owner], { origin: windowId, index: toIndex });
+    await save();
+  })
+);
+chrome.tabs.onAttached.addListener((tabId, { newWindowId, newPosition }) =>
+  serial(async () => {
+    const owner = ownerOf(tabId);
+    if (owner == null) return;
+    Object.assign(state.popped[owner], { origin: newWindowId, index: newPosition });
+    await save();
+  })
+);
+
 async function popOut(tab, auto = false) {
   const displays = await getDisplays();
   if (displays.length < 2) return log("only one display: not popping out");
@@ -208,17 +284,7 @@ async function popOut(tab, auto = false) {
     url: tab.url,
     since: Date.now(),
   };
-  const ph = await whenEditable("create stand-in", () =>
-    chrome.tabs.create({
-      windowId: tab.windowId,
-      index: tab.index + 1,
-      active: false,
-      url:
-        chrome.runtime.getURL("placeholder.html") +
-        "?" +
-        new URLSearchParams({ tab: tabId, title: info.title, icon: info.favIconUrl, url: tab.url }),
-    })
-  );
+  const ph = await createStandIn(tabId, info, tab.windowId, tab.index + 1);
   if (auto) {
     // While we waited, you may have come back to the tab, or dragged it away.
     const now = await chrome.tabs.get(tabId).catch(() => null);
@@ -229,9 +295,11 @@ async function popOut(tab, auto = false) {
     }
     if (now.index !== tab.index) {
       await whenEditable("move stand-in", () => chrome.tabs.move(ph.id, { index: now.index + 1 })).catch(() => {});
+      tab = now;
     }
   }
   info.placeholder = ph.id;
+  info.index = tab.index;
   state.popped[tabId] = info;
   await save();
 
