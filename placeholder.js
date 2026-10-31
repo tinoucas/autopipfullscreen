@@ -4,8 +4,11 @@
 const params = new URLSearchParams(location.search);
 const tabId = Number(params.get("tab"));
 
+// Marks the stand-in in the tab strip: its video plays on the other screen.
+const MARK = "📺 ";
+
 function render(title, icon) {
-  document.title = title || "Video";
+  document.title = MARK + (title || "Video");
   document.getElementById("title").textContent = title || "";
   document.getElementById("icon").href = icon || "";
 }
