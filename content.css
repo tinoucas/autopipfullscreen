@@ -1,0 +1,35 @@
+/* Stretch the YouTube player over the whole (fullscreen) window. */
+html.pf-popped,
+html.pf-popped body {
+  overflow: hidden !important;
+  background: #000 !important;
+}
+
+html.pf-popped #masthead-container,
+html.pf-popped #secondary,
+html.pf-popped #below {
+  display: none !important;
+}
+
+html.pf-popped #movie_player {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 2147483647 !important;
+  background: #000 !important;
+}
+
+html.pf-popped #movie_player video.html5-main-video {
+  top: 0 !important;
+  left: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  object-fit: contain !important;
+}
+
+html.pf-popped #movie_player .ytp-chrome-bottom {
+  left: 12px !important;
+  width: calc(100% - 24px) !important;
+}
