@@ -189,6 +189,21 @@ const check = (name, ok, extra = '') => { console.log((ok ? 'PASS ' : 'FAIL ') +
   await phPage.locator('#back').click(); await sleep(1500);
   check('"Bring it back here" works', (await windows()).length === 1 && (await placeholders()).length === 0);
 
+  // Switching back to the stand-in right away (well within 2 s) brings the
+  // video back as soon as the pop-out is done.
+  await activate(A.id); await sleep(300);
+  await activate(B.id);
+  const t0 = Date.now();
+  let quick = [];
+  while (!quick.length && Date.now() - t0 < 3000) { await sleep(30); quick = await placeholders(); }
+  await activate(quick[0].id);
+  const tBack = Date.now() - t0;
+  let backQ;
+  for (let i = 0; i < 40; i++) { await sleep(50); backQ = await ev((id) => chrome.tabs.get(id), A.id); if (backQ.windowId === B.windowId && (await placeholders()).length === 0) break; }
+  check('switching back to the stand-in right away brings the video back', backQ.windowId === B.windowId && backQ.active && (await placeholders()).length === 0 && (await windows()).length === 1,
+    `switched back ${tBack} ms after leaving, back after ${Date.now() - t0} ms`);
+  await sleep(500);
+
   // Rapid switching: A (playing) -> B -> C -> B quickly; A must pop out exactly once.
   await activate(A.id); await sleep(300);
   await Promise.all([activate(B.id), activate(C.id), activate(B.id)]);

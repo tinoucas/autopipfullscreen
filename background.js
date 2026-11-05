@@ -327,8 +327,10 @@ function initialBounds(display) {
 // closing it closes the video.
 const TAG = "[PopOut] ";
 const stripTag = (t) => (t && t.startsWith(TAG) ? t.slice(TAG.length) : t || "");
-// A placeholder activated this soon after the pop-out was activated by the
-// pop-out itself (the popped-out tab was the active one), not by you.
+// Popping out the active tab (toolbar, shortcut) shows its stand-in in its
+// place: that one activation, coming right after the pop-out, is the
+// pop-out's own, not you switching back. Any other brings the video back,
+// however soon.
 const SETTLE_MS = 2000;
 
 function ownerOf(placeholderId) {
@@ -373,7 +375,7 @@ async function recoverPopOuts() {
         if (ph) info.placeholder = ph.id;
       }
     }
-    info.since = Date.now() - SETTLE_MS; // its stand-in may be switched to right away
+    info.ownActivation = false; // its stand-in may be switched to right away
     info.audible = !!tab.audible;
     info.muted = !!(tab.mutedInfo && tab.mutedInfo.muted);
     log("recovered pop-out of tab", tabId, "stand-in", info.placeholder);
@@ -478,6 +480,7 @@ async function popOut(tab, auto = false, status = null) {
   info.win = win.id;
   // Popped out from the toolbar or the shortcut: the tab was the active one,
   // so show its stand-in now rather than whatever neighbour Chromium picks.
+  info.ownActivation = !!tab.active;
   if (tab.active) await whenEditable("show stand-in", () => chrome.tabs.update(ph.id, { active: true })).catch(() => {});
   info.since = Date.now();
   await save();
@@ -662,11 +665,14 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) =>
     // Switched to the stand-in of a popped-out video: bring the video back.
     const owner = ownerOf(tabId);
     if (owner != null) {
-      if (Date.now() - state.popped[owner].since > SETTLE_MS) {
+      const info = state.popped[owner];
+      if (!(info.ownActivation && Date.now() - info.since < SETTLE_MS)) {
         log("placeholder", tabId, "activated");
         return bringBack(owner);
       }
-      log("placeholder", tabId, "activated by the pop-out itself");
+      info.ownActivation = false;
+      await save();
+      log("placeholder", tabId, "shown by the pop-out itself");
     }
 
     if (prevId == null) return log("activated tab", tabId, "in window", windowId, "(no previous tab recorded)");
