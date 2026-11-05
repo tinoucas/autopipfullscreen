@@ -54,27 +54,46 @@ is up to KWin too: extensions can't.
 
 ## KWin window rule (Plasma 6, Wayland or X11)
 
-The extension adds `[PopOut]` to the title of the video's window, before the
-window is created, so a rule matches it from the start.
+### The rule in use: `kwin/helium-video-pip.kwinrule`
 
-**System Settings → Window Management → Window Rules → Add New**:
+**System Settings → Window Management → Window Rules → Import** this file,
+then adjust it:
 
-- Window title: **Substring Match**, `[PopOut]`
-- Add properties:
-  - Screen: **Force**, your secondary screen
-  - Fullscreen: **Force**, Yes
-  - No titlebar and frame: **Force**, Yes
-  - Focus stealing prevention: **Force**, Extreme: the window never takes
-    the focus when it appears, so you can keep typing where you were (e.g.
-    Ctrl+T and an address right away). The extension also gives the focus
-    back for a few seconds, but keys typed before that would go to YouTube,
-    where letters and digits are shortcuts.
-- Optional:
-  - Virtual Desktop: **Force**, All Desktops
-  - Keep above other windows: **Force**, Yes
-  - Accept focus: **Force**, No, if the window should never take the
-    keyboard focus, even when clicked (the mouse still works on the video;
-    bring it back with the stand-in tab or Alt+Shift+Y instead of Escape)
+- It matches the **window class** of popup windows opened by this extension:
+  `helium chrome-<extension id>-<profile>`. Replace the id with yours (in
+  `chrome://extensions`, with Developer mode on) and `Default` with your
+  profile's folder if it isn't the default one. The class only matches this
+  extension's popups, whatever the page's title. An unpacked extension's id
+  comes from its folder's path: if you move the folder, update the rule.
+- Apply Initially: position `1920,0` and size `1920x1080` (the secondary
+  screen, right of a 1920 px wide primary one: adjust to your screens), no
+  titlebar and frame, all desktops, not in the taskbar.
+- Force: focus stealing prevention Extreme, so the window never takes the
+  focus when it appears: you keep typing where you were (e.g. Ctrl+T and an
+  address right away). The extension also gives the focus back for a few
+  seconds, but keys typed meanwhile would go to the video (on YouTube,
+  letters and digits are shortcuts).
+
+Maximize the window, or make it fullscreen with KWin, to hide Chromium's
+thin address bar too (once maximized, the extension makes it fullscreen).
+
+### Or match the title
+
+The extension also adds `[PopOut]` to the title of the video's window,
+before the window is created, so a rule can match it from the start:
+Window title, **Substring Match**, `[PopOut]`. Then, for instance:
+
+- Screen: **Force**, your secondary screen
+- Fullscreen: **Force**, Yes
+- No titlebar and frame: **Force**, Yes
+- Focus stealing prevention: **Force**, Extreme
+
+### Other properties you may want
+
+- Keep above other windows: **Force**, Yes
+- Accept focus: **Force**, No, if the window should never take the keyboard
+  focus, even when clicked (the mouse still works on the video; bring it
+  back with the stand-in tab or Alt+Shift+Y instead of Escape)
 
 ## Troubleshooting
 
@@ -92,6 +111,7 @@ extension → "service worker".)
   over the window, Escape
 - `placeholder.html` / `placeholder.js`: the stand-in tab
 - `log.html` / `log.js`: the log page
+- `kwin/helium-video-pip.kwinrule`: the KWin window rule in use
 - `icon.svg`: the icon; `icons/*.png` are rendered from it by
   `node tools/render-icons.js`
 - `test/`: an end-to-end test against fake YouTube, Twitch and Vimeo pages (`test/run.sh`; it

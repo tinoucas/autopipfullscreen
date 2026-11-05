@@ -1,0 +1,16 @@
+[helium video PIP]
+Description=helium video PIP
+decorationpolicy=none
+decorationpolicyrule=3
+desktopsrule=3
+fsplevel=4
+fsplevelrule=2
+position=1920,0
+positionrule=3
+size=1920,1080
+sizerule=3
+skiptaskbar=true
+skiptaskbarrule=3
+wmclass=helium chrome-bnnobndbejanbleenjfnigiolehippba-Default
+wmclasscomplete=true
+wmclassmatch=1
